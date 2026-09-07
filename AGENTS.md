@@ -58,9 +58,8 @@
 - Plugin event, pane, or action entrypoints → keep `herdr-plugin.toml`, `src/bin/*`, and
   entrypoint tests aligned.
 
-- Release → bump `version`, add a `## [x.y.z]` section to CHANGELOG.md (the release
-  workflow extracts it by awk and fails the tag if `v<version>` does not match
-  package.json), then push the tag.
+- Release → bump `version` in both `package.json` and `herdr-plugin.toml`; the two must not
+  drift. There is no CHANGELOG or release workflow yet.
 - Commit messages follow Conventional Commits (`feat:`, `fix:`, `docs:`, `ci:`, `test:`,
   `chore:`; `feat!:` for breaking changes).
 
