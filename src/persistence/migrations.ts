@@ -42,32 +42,42 @@ const createResults: Migration = {
 export const MIGRATIONS: readonly Migration[] = [createResults];
 
 export function runMigrations(db: DatabaseSync): { from: number; to: number; applied: string[] } {
-  const currentVersion = readUserVersion(db);
   const newestVersion = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;
-  if (currentVersion > newestVersion) {
+  const observedVersion = readUserVersion(db);
+  if (observedVersion > newestVersion) {
     throw new Error(
-      `Database user_version ${currentVersion} is newer than this Harvest supports (latest ${newestVersion}).`,
+      `Database user_version ${observedVersion} is newer than this Harvest supports (latest ${newestVersion}).`,
     );
   }
-
-  const applied: string[] = [];
-  for (const migration of MIGRATIONS) {
-    if (migration.version <= currentVersion) {
-      continue;
-    }
-
-    withTransaction(db, () => {
-      migration.up(db);
-      db.exec(`PRAGMA user_version = ${migration.version}`);
-    });
-    applied.push(migration.name);
+  if (observedVersion === newestVersion) {
+    return { from: observedVersion, to: newestVersion, applied: [] };
   }
 
-  return {
-    from: currentVersion,
-    to: newestVersion,
-    applied,
-  };
+  return withTransaction(db, () => {
+    const currentVersion = readUserVersion(db);
+    if (currentVersion > newestVersion) {
+      throw new Error(
+        `Database user_version ${currentVersion} is newer than this Harvest supports (latest ${newestVersion}).`,
+      );
+    }
+
+    const applied: string[] = [];
+    for (const migration of MIGRATIONS) {
+      if (migration.version <= currentVersion) {
+        continue;
+      }
+
+      migration.up(db);
+      db.exec(`PRAGMA user_version = ${migration.version}`);
+      applied.push(migration.name);
+    }
+
+    return {
+      from: currentVersion,
+      to: newestVersion,
+      applied,
+    };
+  });
 }
 
 function readUserVersion(db: DatabaseSync): number {

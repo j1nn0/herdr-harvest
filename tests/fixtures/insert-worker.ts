@@ -12,6 +12,16 @@ if (databasePath === undefined) {
   throw new Error("usage: insert-worker.ts <database-path>");
 }
 
+const startAtArg = process.argv[3];
+if (startAtArg !== undefined) {
+  const startAt = Number(startAtArg);
+  if (!Number.isFinite(startAt)) {
+    throw new Error("start time must be a finite epoch millisecond value");
+  }
+  while (Date.now() < startAt) {
+    // Intentionally busy-wait so all workers cross the database-open barrier together.
+  }
+}
 const store = new SqliteResultStore(openDatabase(databasePath));
 try {
   const outcome = store.insert({

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, test } from "node:test";
@@ -81,6 +81,36 @@ describe("migrations", () => {
       assert.deepEqual(store.get(result.id), result);
     } finally {
       store.close();
+    }
+  });
+});
+describe("database permissions", () => {
+  test("protects newly created state and preserves an existing state directory mode", {
+    skip: process.platform === "win32",
+  }, () => {
+    const directory = mkdtempSync(join(tmpdir(), "herdr-harvest-permissions-"));
+    try {
+      const freshStateDirectory = join(directory, "fresh-state");
+      const freshDatabasePath = join(freshStateDirectory, "harvest.db");
+      const freshDb = openDatabase(freshDatabasePath);
+      try {
+        assert.equal(statSync(freshStateDirectory).mode & 0o777, 0o700);
+        assert.equal(statSync(freshDatabasePath).mode & 0o777, 0o600);
+      } finally {
+        freshDb.close();
+      }
+
+      const existingStateDirectory = join(directory, "existing-state");
+      mkdirSync(existingStateDirectory);
+      chmodSync(existingStateDirectory, 0o755);
+      const existingDb = openDatabase(join(existingStateDirectory, "harvest.db"));
+      try {
+        assert.equal(statSync(existingStateDirectory).mode & 0o777, 0o755);
+      } finally {
+        existingDb.close();
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
     }
   });
 });

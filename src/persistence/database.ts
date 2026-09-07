@@ -1,11 +1,15 @@
-import { mkdirSync } from "node:fs";
+import { chmodSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 export function openDatabase(path: string): DatabaseSync {
   const inMemory = path === ":memory:";
   if (!inMemory) {
-    mkdirSync(dirname(path), { recursive: true });
+    if (process.platform === "win32") {
+      mkdirSync(dirname(path), { recursive: true });
+    } else {
+      mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    }
   }
 
   const db = new DatabaseSync(path);
@@ -17,8 +21,23 @@ export function openDatabase(path: string): DatabaseSync {
   db.exec("PRAGMA foreign_keys = ON");
   if (!inMemory) {
     db.exec("PRAGMA journal_mode = WAL");
+    protectDatabaseFiles(path);
   }
   return db;
+}
+
+function protectDatabaseFiles(path: string): void {
+  if (process.platform === "win32") {
+    return;
+  }
+
+  for (const filePath of [path, `${path}-wal`, `${path}-shm`]) {
+    try {
+      chmodSync(filePath, 0o600);
+    } catch {
+      // Permissions are defense in depth; inability to tighten them must not block capture.
+    }
+  }
 }
 
 /**
