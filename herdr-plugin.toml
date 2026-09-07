@@ -1,0 +1,28 @@
+id = "j1nn0.herdr-harvest"
+name = "Harvest"
+version = "0.1.0"
+min_herdr_version = "0.8.2"
+description = "Harvest the results of your agent herd — capture agent output on done into a durable Result Inbox."
+platforms = ["linux", "macos", "windows"]
+
+# Fires on every pane agent status transition. The hook itself filters for
+# `agent_status == "done"` and exits immediately otherwise.
+[[events]]
+on = "pane.agent_status_changed"
+command = ["node", "src/bin/hook.ts"]
+
+# The Result Inbox TUI. `overlay` opens a temporary zoomed overlay over the
+# active pane and restores the previous focus and zoom when it closes, which
+# suits a transient inbox while still giving the pane a real pane id.
+[[panes]]
+id = "inbox"
+title = "Harvest Inbox"
+placement = "overlay"
+command = ["node", "src/bin/inbox.ts"]
+
+[[actions]]
+id = "open"
+title = "Open Harvest Inbox"
+description = "Open the Harvest Result Inbox"
+contexts = ["global"]
+command = ["node", "src/bin/open.ts"]
