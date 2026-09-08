@@ -14,6 +14,8 @@ const CONFIG: HarvestConfig = {
   captureLines: 120,
   captureSource: "detection",
   databasePath: ":memory:",
+  herdrSessionKey: "/tmp/herdr/sessions/nightly/herdr.sock",
+  herdrSessionLabel: "nightly",
 };
 
 const AGENT_INFO: HerdrTargetInfo = {
@@ -52,6 +54,8 @@ describe("captureCompletion", () => {
           paneName: result.paneName,
           agentSessionKind: result.agentSessionKind,
           agentSessionValue: result.agentSessionValue,
+          herdrSessionKey: result.herdrSessionKey,
+          herdrSessionLabel: result.herdrSessionLabel,
           captureSource: result.captureSource,
           captureLineCount: result.captureLineCount,
           rawText: result.rawText,
@@ -66,6 +70,8 @@ describe("captureCompletion", () => {
           paneName: "π - herdr-harvest",
           agentSessionKind: "path",
           agentSessionValue: "/tmp/native-session.jsonl",
+          herdrSessionKey: "/tmp/herdr/sessions/nightly/herdr.sock",
+          herdrSessionLabel: "nightly",
           captureSource: "detection",
           captureLineCount: 120,
           rawText,

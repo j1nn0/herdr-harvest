@@ -27,13 +27,19 @@ describe("preview", () => {
 
 const sessionIdentity: Pick<
   CaptureInput,
-  "agentSessionKind" | "agentSessionValue" | "workspaceId" | "paneId" | "agentKind"
+  | "agentSessionKind"
+  | "agentSessionValue"
+  | "workspaceId"
+  | "paneId"
+  | "agentKind"
+  | "herdrSessionKey"
 > = {
   agentSessionKind: "id",
   agentSessionValue: "session-a",
   workspaceId: "workspace-a",
   paneId: "pane-a",
   agentKind: "terminal",
+  herdrSessionKey: "/tmp/herdr-a.sock",
 };
 
 describe("dedupKey", () => {

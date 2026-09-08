@@ -9,14 +9,20 @@ export function contentHash(rawText: string): string {
 export function dedupKey(
   input: Pick<
     CaptureInput,
-    "agentSessionKind" | "agentSessionValue" | "workspaceId" | "paneId" | "agentKind"
+    | "agentSessionKind"
+    | "agentSessionValue"
+    | "workspaceId"
+    | "paneId"
+    | "agentKind"
+    | "herdrSessionKey"
   >,
   rawContentHash: string,
 ): string {
   if (input.agentSessionValue !== null && input.agentSessionValue.length > 0) {
     return hashComponents([
-      "v1",
+      "v2",
       "session",
+      input.herdrSessionKey ?? "",
       input.agentSessionKind ?? "",
       input.agentSessionValue,
       rawContentHash,
@@ -24,8 +30,9 @@ export function dedupKey(
   }
 
   return hashComponents([
-    "v1",
+    "v2",
     "pane",
+    input.herdrSessionKey ?? "",
     input.workspaceId ?? "",
     input.paneId,
     input.agentKind ?? "",

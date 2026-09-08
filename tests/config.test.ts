@@ -12,7 +12,17 @@ describe("loadConfig", () => {
       captureLines: 400,
       captureSource: "recent-unwrapped",
       databasePath: join("/tmp/harvest", "harvest.db"),
+      herdrSessionKey: null,
+      herdrSessionLabel: null,
     });
+    assert.deepEqual(loaded.warnings, []);
+  });
+
+  test("leaves the Herdr session identity unknown when the socket path is missing", () => {
+    const loaded = loadConfig({ HARVEST_STATE_DIR: "/tmp/harvest" });
+
+    assert.equal(loaded.config.herdrSessionKey, null);
+    assert.equal(loaded.config.herdrSessionLabel, null);
     assert.deepEqual(loaded.warnings, []);
   });
 
@@ -26,7 +36,42 @@ describe("loadConfig", () => {
     assert.equal(loaded.config.captureLines, 1234);
     assert.equal(loaded.config.captureSource, "detection");
     assert.equal(loaded.config.databasePath, join("/tmp/plugin-state", "harvest.db"));
+    assert.equal(loaded.config.herdrSessionKey, null);
+    assert.equal(loaded.config.herdrSessionLabel, null);
     assert.deepEqual(loaded.warnings, []);
+  });
+
+  test("derives the default Herdr session identity from the socket path", () => {
+    const socketPath = "/tmp/herdr/herdr.sock";
+    const loaded = loadConfig({
+      HARVEST_STATE_DIR: "/tmp/harvest",
+      HERDR_SOCKET_PATH: socketPath,
+    });
+
+    assert.equal(loaded.config.herdrSessionKey, socketPath);
+    assert.equal(loaded.config.herdrSessionLabel, "default");
+  });
+
+  test("derives a named Herdr session identity with Windows separators", () => {
+    const socketPath = "C:\\herdr\\sessions\\nightly\\herdr.sock";
+    const loaded = loadConfig({
+      HARVEST_STATE_DIR: "/tmp/harvest",
+      HERDR_SOCKET_PATH: socketPath,
+    });
+
+    assert.equal(loaded.config.herdrSessionKey, socketPath);
+    assert.equal(loaded.config.herdrSessionLabel, "nightly");
+  });
+
+  test("keeps a non-standard socket key without inventing a label", () => {
+    const socketPath = "/tmp/herdr/custom.sock";
+    const loaded = loadConfig({
+      HARVEST_STATE_DIR: "/tmp/harvest",
+      HERDR_SOCKET_PATH: socketPath,
+    });
+
+    assert.equal(loaded.config.herdrSessionKey, socketPath);
+    assert.equal(loaded.config.herdrSessionLabel, null);
   });
 
   for (const value of ["not-a-number", "0", "-1", "10001"]) {

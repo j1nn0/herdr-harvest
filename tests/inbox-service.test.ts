@@ -20,6 +20,8 @@ function makeInput(overrides: Partial<CaptureInput> = {}): CaptureInput {
     agentKind: "terminal",
     agentSessionKind: "id",
     agentSessionValue: "session-id",
+    herdrSessionKey: "/tmp/herdr/sessions/default/herdr.sock",
+    herdrSessionLabel: "default",
     captureSource: "recent-unwrapped",
     captureLineCount: 12,
     rawText: "captured output",
@@ -139,6 +141,89 @@ describe("inbox service", () => {
       const [item] = service.list();
       assert.equal(item?.agentLabel, "unknown agent");
       assert.equal(item?.contextLabel, "- / pane-only");
+    } finally {
+      store.close();
+    }
+  });
+
+  test("keeps context labels unprefixed for one Herdr session", () => {
+    const { service, store } = makeService();
+    try {
+      const result = inserted(store, makeInput());
+      assert.equal(service.list()[0]?.contextLabel, "Workspace name / Pane name");
+      assert.equal(service.open(result.id)?.contextLabel, "Workspace name / Pane name");
+    } finally {
+      store.close();
+    }
+  });
+
+  test("prefixes list and detail context labels when sessions differ", () => {
+    const { service, store } = makeService();
+    try {
+      const first = inserted(
+        store,
+        makeInput({
+          herdrSessionKey: "socket-a",
+          herdrSessionLabel: "alpha",
+          rawText: "same output",
+        }),
+      );
+      const second = inserted(
+        store,
+        makeInput({
+          herdrSessionKey: "socket-b",
+          herdrSessionLabel: "beta",
+          rawText: "same output",
+        }),
+      );
+
+      const items = service.list();
+      assert.equal(
+        items.find((item) => item.id === first.id)?.contextLabel,
+        "alpha · Workspace name / Pane name",
+      );
+      assert.equal(
+        items.find((item) => item.id === second.id)?.contextLabel,
+        "beta · Workspace name / Pane name",
+      );
+      assert.equal(service.open(first.id)?.contextLabel, "alpha · Workspace name / Pane name");
+      assert.equal(
+        service.list().find((item) => item.id === first.id)?.contextLabel,
+        "alpha · Workspace name / Pane name",
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  test("displays unknown session for a null Herdr session key", () => {
+    const { service, store } = makeService();
+    try {
+      const unknown = inserted(
+        store,
+        makeInput({
+          herdrSessionKey: null,
+          herdrSessionLabel: null,
+          rawText: "unknown session output",
+        }),
+      );
+      inserted(
+        store,
+        makeInput({
+          herdrSessionKey: "socket-known",
+          herdrSessionLabel: "known",
+          rawText: "known session output",
+        }),
+      );
+
+      assert.equal(
+        service.list().find((item) => item.id === unknown.id)?.contextLabel,
+        "unknown session · Workspace name / Pane name",
+      );
+      assert.equal(
+        service.open(unknown.id)?.contextLabel,
+        "unknown session · Workspace name / Pane name",
+      );
     } finally {
       store.close();
     }

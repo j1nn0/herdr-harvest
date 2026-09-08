@@ -4,6 +4,8 @@ export interface HarvestConfig {
   captureLines: number;
   captureSource: string;
   databasePath: string;
+  herdrSessionKey: string | null;
+  herdrSessionLabel: string | null;
 }
 
 const DEFAULT_CAPTURE_LINES = 400;
@@ -28,6 +30,8 @@ export function loadConfig(env: Record<string, string | undefined>): {
       captureLines,
       captureSource,
       databasePath: join(stateDir, "harvest.db"),
+      herdrSessionKey: parseHerdrSessionKey(env.HERDR_SOCKET_PATH),
+      herdrSessionLabel: parseHerdrSessionLabel(env.HERDR_SOCKET_PATH),
     },
     warnings,
   };
@@ -48,6 +52,30 @@ function parseCaptureLines(value: string | undefined, warnings: string[]): numbe
   }
 
   return parsed;
+}
+
+function parseHerdrSessionKey(value: string | undefined): string | null {
+  return value !== undefined && value.trim().length > 0 ? value : null;
+}
+
+function parseHerdrSessionLabel(value: string | undefined): string | null {
+  if (value === undefined || value.trim().length === 0) {
+    return null;
+  }
+
+  const segments = value.split(/[\\/]+/);
+  if (segments.at(-1) !== "herdr.sock") {
+    return null;
+  }
+
+  const parent = segments.at(-2);
+  if (segments.at(-3) === "sessions") {
+    return parent !== undefined && parent.length > 0 ? parent : null;
+  }
+  if (parent === "sessions") {
+    return null;
+  }
+  return "default";
 }
 
 function parseCaptureSource(value: string | undefined, warnings: string[]): string {

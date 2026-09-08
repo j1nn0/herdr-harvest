@@ -23,6 +23,8 @@ function makeInput(overrides: Partial<CaptureInput> = {}): CaptureInput {
     agentKind: "terminal",
     agentSessionKind: "id",
     agentSessionValue: "session-a",
+    herdrSessionKey: "/tmp/herdr/sessions/a/herdr.sock",
+    herdrSessionLabel: "a",
     captureSource: "recent-unwrapped",
     captureLineCount: 400,
     rawText: "completion output",
@@ -50,7 +52,7 @@ describe("migrations", () => {
       assert.deepEqual(runMigrations(db), {
         from: 0,
         to: latest.version,
-        applied: [latest.name],
+        applied: MIGRATIONS.map((migration) => migration.name),
       });
       assert.deepEqual(runMigrations(db), {
         from: latest.version,
@@ -83,6 +85,117 @@ describe("migrations", () => {
       store.close();
     }
   });
+});
+
+test("upgrades a v1 database without changing legacy rows", () => {
+  const db = openDatabase(":memory:");
+  const v1 = MIGRATIONS[0];
+  if (v1 === undefined) {
+    throw new Error("Expected the v1 migration.");
+  }
+
+  const legacy = {
+    id: "legacy-result",
+    capturedAtMs: 123_456,
+    workspaceId: "legacy-workspace",
+    workspaceName: "Legacy Workspace",
+    tabId: "legacy-tab",
+    paneId: "legacy-pane",
+    paneName: "Legacy Pane",
+    agentName: "Legacy Agent",
+    agentKind: "legacy-kind",
+    agentSessionKind: "path",
+    agentSessionValue: "/tmp/legacy-session.jsonl",
+    captureSource: "recent-unwrapped",
+    captureLineCount: 321,
+    rawText: "  legacy output  \\n世界 🚀\\n",
+    contentHash: "legacy-content-hash",
+    dedupKey: "legacy-dedup-key",
+    readAtMs: 456_789,
+    archivedAtMs: 567_890,
+  } as const;
+
+  try {
+    v1.up(db);
+    db.exec("PRAGMA user_version = 1");
+    db.prepare(`
+        INSERT INTO results (
+          id,
+          captured_at_ms,
+          workspace_id,
+          workspace_name,
+          tab_id,
+          pane_id,
+          pane_name,
+          agent_name,
+          agent_kind,
+          agent_session_kind,
+          agent_session_value,
+          capture_source,
+          capture_line_count,
+          raw_text,
+          content_hash,
+          dedup_key,
+          read_at_ms,
+          archived_at_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+      legacy.id,
+      legacy.capturedAtMs,
+      legacy.workspaceId,
+      legacy.workspaceName,
+      legacy.tabId,
+      legacy.paneId,
+      legacy.paneName,
+      legacy.agentName,
+      legacy.agentKind,
+      legacy.agentSessionKind,
+      legacy.agentSessionValue,
+      legacy.captureSource,
+      legacy.captureLineCount,
+      legacy.rawText,
+      legacy.contentHash,
+      legacy.dedupKey,
+      legacy.readAtMs,
+      legacy.archivedAtMs,
+    );
+
+    assert.deepEqual(runMigrations(db), {
+      from: 1,
+      to: 2,
+      applied: ["add-herdr-session"],
+    });
+    const version = db.prepare("PRAGMA user_version").get() as
+      | { user_version?: number }
+      | undefined;
+    assert.equal(version?.user_version, 2);
+
+    const store = new SqliteResultStore(db);
+    assert.deepEqual(store.get(legacy.id), {
+      id: legacy.id,
+      capturedAtMs: legacy.capturedAtMs,
+      workspaceId: legacy.workspaceId,
+      workspaceName: legacy.workspaceName,
+      tabId: legacy.tabId,
+      paneId: legacy.paneId,
+      paneName: legacy.paneName,
+      agentName: legacy.agentName,
+      agentKind: legacy.agentKind,
+      agentSessionKind: legacy.agentSessionKind,
+      agentSessionValue: legacy.agentSessionValue,
+      herdrSessionKey: null,
+      herdrSessionLabel: null,
+      captureSource: legacy.captureSource,
+      captureLineCount: legacy.captureLineCount,
+      rawText: legacy.rawText,
+      contentHash: legacy.contentHash,
+      dedupKey: legacy.dedupKey,
+      readAtMs: legacy.readAtMs,
+      archivedAtMs: legacy.archivedAtMs,
+    });
+  } finally {
+    db.close();
+  }
 });
 describe("database permissions", () => {
   test("protects newly created state and preserves an existing state directory mode", {
@@ -146,6 +259,8 @@ describe("SqliteResultStore", () => {
           agentKind: result.agentKind,
           agentSessionKind: result.agentSessionKind,
           agentSessionValue: result.agentSessionValue,
+          herdrSessionKey: result.herdrSessionKey,
+          herdrSessionLabel: result.herdrSessionLabel,
           captureSource: result.captureSource,
           captureLineCount: result.captureLineCount,
           rawText: result.rawText,
@@ -188,6 +303,61 @@ describe("SqliteResultStore", () => {
       assert.equal(second.result.id, first.result.id);
       assert.equal(different.status, "inserted");
       assert.equal(store.list({ includeArchived: true }).length, 2);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("separates identical pane captures from different Herdr sessions", () => {
+    const db = openDatabase(":memory:");
+    const store = new SqliteResultStore(db);
+    try {
+      const first = inserted(
+        store.insert(
+          makeInput({
+            agentSessionKind: null,
+            agentSessionValue: null,
+            herdrSessionKey: "socket-a",
+            herdrSessionLabel: "alpha",
+          }),
+        ),
+      );
+      const second = inserted(
+        store.insert({
+          ...makeInput({
+            agentSessionKind: null,
+            agentSessionValue: null,
+            herdrSessionKey: "socket-b",
+            herdrSessionLabel: "beta",
+          }),
+        }),
+      );
+
+      assert.notEqual(first.dedupKey, second.dedupKey);
+      assert.equal(store.list({ includeArchived: true }).length, 2);
+      assert.deepEqual(store.distinctHerdrSessionKeys().sort(), ["socket-a", "socket-b"]);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("deduplicates repeated pane captures within one Herdr session", () => {
+    const db = openDatabase(":memory:");
+    const store = new SqliteResultStore(db);
+    try {
+      const input = makeInput({
+        agentSessionKind: null,
+        agentSessionValue: null,
+        herdrSessionKey: "socket-a",
+        herdrSessionLabel: "alpha",
+      });
+      const first = store.insert(input);
+      const second = store.insert(input);
+
+      assert.equal(first.status, "inserted");
+      assert.equal(second.status, "duplicate");
+      assert.equal(second.result.id, first.result.id);
+      assert.equal(store.list({ includeArchived: true }).length, 1);
     } finally {
       store.close();
     }

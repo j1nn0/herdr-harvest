@@ -65,6 +65,8 @@ export async function captureCompletion(
       agentKind,
       agentSessionKind: metadata.session?.kind ?? null,
       agentSessionValue: metadata.session?.value ?? null,
+      herdrSessionKey: deps.config.herdrSessionKey,
+      herdrSessionLabel: deps.config.herdrSessionLabel,
       captureSource: deps.config.captureSource,
       captureLineCount: deps.config.captureLines,
       rawText,

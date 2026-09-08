@@ -12,6 +12,8 @@ export interface CaptureInput {
   agentKind: string | null;
   agentSessionKind: AgentSessionKind | null;
   agentSessionValue: string | null;
+  herdrSessionKey: string | null;
+  herdrSessionLabel: string | null;
   captureSource: string;
   captureLineCount: number;
   rawText: string;

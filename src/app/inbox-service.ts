@@ -34,7 +34,10 @@ export function createInboxService(deps: {
   now: () => number;
 }): InboxPort {
   return {
-    list: () => deps.store.list().map(toItem),
+    list: () => {
+      const includeSession = hasMultipleHerdrSessions(deps.store);
+      return deps.store.list().map((result) => toItem(result, includeSession));
+    },
     open: (id) => openResult(deps.store, id, deps.now),
     archive: (id) => archiveResult(deps.store, id, deps.now),
     copy: (id) => copyResult(deps.store, deps.clipboard, id),
@@ -48,7 +51,7 @@ function openResult(store: ResultStore, id: string, now: () => number): InboxDet
   }
 
   const markedRead = store.markRead(id, now());
-  return toDetail(markedRead ?? result);
+  return toDetail(markedRead ?? result, hasMultipleHerdrSessions(store));
 }
 
 function archiveResult(store: ResultStore, id: string, now: () => number): boolean {
@@ -73,11 +76,11 @@ function copyResult(
   return clipboard.copy(result.rawText);
 }
 
-function toItem(result: HarvestResult): InboxItem {
+function toItem(result: HarvestResult, includeSession: boolean): InboxItem {
   return {
     id: result.id,
     agentLabel: result.agentName ?? result.agentKind ?? "unknown agent",
-    contextLabel: contextLabel(result),
+    contextLabel: contextLabel(result, includeSession),
     capturedAtMs: result.capturedAtMs,
     preview: makePreview(result.rawText),
     unread: result.readAtMs === null,
@@ -85,9 +88,9 @@ function toItem(result: HarvestResult): InboxItem {
   };
 }
 
-function toDetail(result: HarvestResult): InboxDetail {
+function toDetail(result: HarvestResult, includeSession: boolean): InboxDetail {
   return {
-    ...toItem(result),
+    ...toItem(result, includeSession),
     rawText: result.rawText,
     captureSource: result.captureSource,
     captureLineCount: result.captureLineCount,
@@ -95,8 +98,17 @@ function toDetail(result: HarvestResult): InboxDetail {
   };
 }
 
-function contextLabel(result: HarvestResult): string {
+function contextLabel(result: HarvestResult, includeSession: boolean): string {
   const workspace = result.workspaceName ?? result.workspaceId ?? "-";
   const pane = result.paneName ?? result.paneId;
-  return `${workspace} / ${pane}`;
+  const context = `${workspace} / ${pane}`;
+  return includeSession ? `${sessionDisplay(result)} · ${context}` : context;
+}
+
+function sessionDisplay(result: HarvestResult): string {
+  return result.herdrSessionLabel ?? result.herdrSessionKey ?? "unknown session";
+}
+
+function hasMultipleHerdrSessions(store: ResultStore): boolean {
+  return store.distinctHerdrSessionKeys().length > 1;
 }

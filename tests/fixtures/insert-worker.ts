@@ -35,6 +35,8 @@ try {
     agentKind: "claude",
     agentSessionKind: "id",
     agentSessionValue: "session-race",
+    herdrSessionKey: "/tmp/herdr.sock",
+    herdrSessionLabel: "default",
     captureSource: "recent-unwrapped",
     captureLineCount: 400,
     rawText: "racing completion snapshot",

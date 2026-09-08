@@ -17,6 +17,7 @@ export interface ResultStore {
   markRead(id: string, atMs: number): HarvestResult | null;
   archive(id: string, atMs: number): HarvestResult | null;
   close(): void;
+  distinctHerdrSessionKeys(): Array<string | null>;
 }
 
 type SqlRow = Record<string, unknown>;
@@ -38,6 +39,8 @@ type InsertParams = [
   string,
   string,
   string,
+  string | null,
+  string | null,
 ];
 
 const SELECT_BY_ID = "SELECT * FROM results WHERE id = ?";
@@ -72,6 +75,8 @@ export class SqliteResultStore implements ResultStore {
       input.rawText,
       rawContentHash,
       key,
+      input.herdrSessionKey,
+      input.herdrSessionLabel,
     ];
 
     const transaction = withTransaction(this.db, () => {
@@ -93,8 +98,10 @@ export class SqliteResultStore implements ResultStore {
             capture_line_count,
             raw_text,
             content_hash,
-            dedup_key
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            dedup_key,
+            herdr_session_key,
+            herdr_session_label
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(dedup_key) DO NOTHING
         `)
         .run(...params);
@@ -126,6 +133,13 @@ export class SqliteResultStore implements ResultStore {
         ? (this.db.prepare(sql).all() as SqlRow[])
         : (this.db.prepare(`${sql} LIMIT ?`).all(limit) as SqlRow[]);
     return rows.map(mapRow);
+  }
+
+  distinctHerdrSessionKeys(): Array<string | null> {
+    const rows = this.db
+      .prepare("SELECT DISTINCT herdr_session_key FROM results")
+      .all() as SqlRow[];
+    return rows.map((row) => row.herdr_session_key as string | null);
   }
 
   get(id: string): HarvestResult | null {
@@ -175,6 +189,8 @@ function mapRow(row: SqlRow): HarvestResult {
     agentKind: row.agent_kind as string | null,
     agentSessionKind: row.agent_session_kind as AgentSessionKind | null,
     agentSessionValue: row.agent_session_value as string | null,
+    herdrSessionKey: row.herdr_session_key as string | null,
+    herdrSessionLabel: row.herdr_session_label as string | null,
     captureSource: row.capture_source as string,
     captureLineCount: row.capture_line_count as number,
     rawText: row.raw_text as string,

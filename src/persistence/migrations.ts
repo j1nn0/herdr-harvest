@@ -39,7 +39,18 @@ const createResults: Migration = {
   },
 };
 
-export const MIGRATIONS: readonly Migration[] = [createResults];
+const addHerdrSession: Migration = {
+  version: 2,
+  name: "add-herdr-session",
+  up(db) {
+    db.exec(`
+      ALTER TABLE results ADD COLUMN herdr_session_key   TEXT;
+      ALTER TABLE results ADD COLUMN herdr_session_label TEXT;
+    `);
+  },
+};
+
+export const MIGRATIONS: readonly Migration[] = [createResults, addHerdrSession];
 
 export function runMigrations(db: DatabaseSync): { from: number; to: number; applied: string[] } {
   const newestVersion = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;
