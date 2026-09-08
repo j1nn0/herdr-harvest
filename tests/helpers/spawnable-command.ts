@@ -11,16 +11,19 @@ export function spawnableCommand(
     const commandName = name.endsWith(".exe") ? name : `${name}.exe`;
     const path = join(dir, commandName);
     const preloadPath = join(dir, "__stub.cjs");
+    const bodyPath = join(dir, "__stub-body.cjs");
+    writeFileSync(bodyPath, posixBody);
     writeFileSync(
       preloadPath,
-      `if (process.argv[1] === undefined) {
+      `if (process.execPath === process.env.HARVEST_STUB_BINARY) {
   const fs = require("node:fs");
   const env = process.env;
   if (env.ARGS_FILE !== undefined) {
-    fs.writeFileSync(env.ARGS_FILE, JSON.stringify(process.argv.slice(2)));
+    fs.writeFileSync(env.ARGS_FILE, JSON.stringify(process.argv.slice(1)));
   }
   if (env.REPORT_ERROR === "1") {
-    process.stderr.write(
+    fs.writeSync(
+      2,
       JSON.stringify({
         error: { code: "pane_open_failed", message: "Pane open failed." },
       }),
@@ -28,34 +31,47 @@ export function spawnableCommand(
     process.exit(7);
   }
   if (env.REPORT_FAILURE === "1") {
-    process.stderr.write("stub command failed");
+    fs.writeSync(2, "stub command failed");
     process.exit(9);
   }
   if (env.CAPTURE_FILE !== undefined) {
     fs.writeFileSync(env.CAPTURE_FILE, fs.readFileSync(0, "utf8"));
-    process.exitCode = Number(env.STUB_EXIT || 0);
-    return;
+    process.exit(Number(env.STUB_EXIT || 0));
   }
   if (env.STUB_STDERR !== undefined) {
-    // Drain stdin to EOF first, mirroring the POSIX body. Exiting before the parent
-    // finishes writing would race its stdin.end() into an EPIPE, and the caller would
-    // then observe that write error instead of this stub's exit code and stderr.
+    // Drain stdin before exiting so the parent's stdin.end() cannot race into EPIPE.
     try {
       fs.readFileSync(0);
     } catch {}
-    process.stderr.write(env.STUB_STDERR);
+    fs.writeSync(2, env.STUB_STDERR);
     process.exit(Number(env.STUB_EXIT || 0));
   }
-  process.stdout.write("accepted");
+  if (env.HARVEST_STUB_RUN_BODY === "1" && env.HARVEST_STUB_BODY !== undefined) {
+    process.argv.splice(1, 0, env.HARVEST_STUB_BODY);
+    process.stdout.write = (text) => {
+      fs.writeSync(1, text);
+      return true;
+    };
+    process.stderr.write = (text) => {
+      fs.writeSync(2, text);
+      return true;
+    };
+    require(env.HARVEST_STUB_BODY);
+    process.exit(Number(process.exitCode ?? 0));
+  }
+  fs.writeSync(1, "accepted");
   process.exit(0);
-}
-`,
+}`,
     );
     copyFileSync(process.execPath, path);
     const normalizedPreloadPath = preloadPath.replaceAll("\\", "/");
     return {
       path,
-      env: { NODE_OPTIONS: `--require="${normalizedPreloadPath}"` },
+      env: {
+        NODE_OPTIONS: `--require="${normalizedPreloadPath}"`,
+        HARVEST_STUB_BINARY: path,
+        HARVEST_STUB_BODY: bodyPath,
+      },
     };
   }
 

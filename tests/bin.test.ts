@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, test } from "node:test";
@@ -9,6 +9,7 @@ import { promisify } from "node:util";
 
 import { openDatabase } from "../src/persistence/database.ts";
 import { SqliteResultStore } from "../src/persistence/result-store.ts";
+import { spawnableCommand } from "./helpers/spawnable-command.ts";
 
 const execFileAsync = promisify(execFile);
 const REPOSITORY_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -252,15 +253,16 @@ function processOutput(error: unknown, field: "stdout" | "stderr"): string {
 
 function makeFixture(): Fixture {
   const stateDirectory = mkdtempSync(join(tmpdir(), "herdr-harvest-hook-"));
-  const stubPath = join(stateDirectory, "herdr-stub.cjs");
-  writeFileSync(stubPath, HERDR_STUB, { mode: 0o755 });
-  chmodSync(stubPath, 0o755);
+  const stub = spawnableCommand(stateDirectory, "herdr-stub.cjs", HERDR_STUB);
+  const stubPath = stub.path;
 
   return {
     stateDirectory,
     stubPath,
     env: {
       ...process.env,
+      ...stub.env,
+      HARVEST_STUB_RUN_BODY: "1",
       HARVEST_STATE_DIR: stateDirectory,
       HARVEST_CAPTURE_LINES: "120",
       HARVEST_CAPTURE_SOURCE: "detection",
@@ -301,8 +303,7 @@ function eventWithStatus(status: string): string {
   });
 }
 
-const HERDR_STUB = `#!/usr/bin/env node
-const args = process.argv.slice(2);
+const HERDR_STUB = `const args = process.argv.slice(2);
 const [scope, command] = args;
 
 function output(value) {
