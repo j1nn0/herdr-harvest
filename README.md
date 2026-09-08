@@ -13,9 +13,9 @@ When an agent running in a Herdr pane finishes, Harvest:
 3. and surfaces it in a keyboard-driven inbox.
 
 "Finishes" is less obvious than it sounds. Herdr reports a finished agent as `done`
-only while its result is still *unseen*; if the completion lands on a pane you happen
-to be looking at, the very same transition arrives as `idle` instead. Harvest captures
-both, so a result is never lost just because you were watching.
+while its result is still *unseen*; when the completion lands on a pane you are
+already looking at, it can arrive as `idle` instead. Harvest recognises both, so a
+result is not lost just because you happened to be watching.
 
 It does this without focusing the agent's pane and without marking the agent as seen, so Herdr's own attention model is left exactly as it was.
 
@@ -29,7 +29,7 @@ Harvest turns "go back and find it" into "open the inbox".
 
 This is the most important thing to understand about Harvest v0.1.
 
-What Harvest stores is a **completion snapshot**: the last N rendered rows of the pane at the moment the agent reached `done`. It is *not* a parsed final assistant message.
+What Harvest stores is a **completion snapshot**: the last N rendered rows of the pane at the moment the agent finished. It is *not* a parsed final assistant message.
 
 That means a snapshot typically contains the agent's closing output *plus* whatever else was on screen — the agent's own UI chrome, status bars, banners, and part of the preceding conversation. Harvest deliberately does not try to guess where the assistant's final message begins and ends.
 
@@ -37,31 +37,18 @@ This is a design choice, not a limitation to be fixed later by heuristics. Captu
 
 ## Requirements
 
-- Herdr **v0.8.2** or newer
+- Herdr **v0.8.2** or newer (release hardening for v0.1.0 was live-tested against Herdr 0.9.0)
 - **Node.js 24+** on `PATH` (Harvest runs TypeScript directly via Node's type stripping — there is no build step)
-
-## Built on the plugin SDK
-
-Harvest talks to Herdr through [`@j1nn0/herdr-plugin-sdk`](https://www.npmjs.com/package/@j1nn0/herdr-plugin-sdk), its only runtime dependency besides Ink and React.
-
-There are three layers, and it is worth keeping them apart:
-
-- **Herdr Plugin v1** is the official API: a command-based contract of manifest entrypoints, environment variables, and CLI commands.
-- **`@j1nn0/herdr-plugin-sdk`** is an unofficial typed TypeScript convenience layer over that contract — event and context parsing, a typed CLI client, structured errors, and test helpers.
-- **Harvest** is an application built on that layer.
-
-So Harvest no longer ships its own Herdr subprocess handling or protocol parsing. What it still owns is everything specific to Harvest: what `done` means, capture policy, the agent-first/pane-fallback and read-fallback rules, deduplication, storage, clipboard, and the inbox.
 
 ## Installation
 
+Install directly from GitHub:
+
 ```bash
-git clone https://github.com/j1nn0/herdr-harvest
-cd herdr-harvest
-npm install
-herdr plugin link "$PWD"
+herdr plugin install j1nn0/herdr-harvest
 ```
 
-`herdr plugin link` registers the manifest at its current path and never copies, symlinks, or builds anything, so the plugin runs straight from this working tree. That also means **`npm install` is required before linking** — a linked plugin must already be runnable.
+Herdr fetches the repository, runs the build step the manifest declares, which installs Harvest's runtime dependencies, and then registers the plugin. There is nothing to compile and nothing to install by hand.
 
 Verify it registered:
 
@@ -71,7 +58,18 @@ herdr plugin list --plugin j1nn0.herdr-harvest --json
 
 ## Local development
 
-The linked plugin runs from your checkout, so edits to `src/` take effect on the next hook or pane launch with no rebuild and no re-link.
+Work from a checkout instead when you are changing Harvest itself:
+
+```bash
+git clone https://github.com/j1nn0/herdr-harvest
+cd herdr-harvest
+npm install
+herdr plugin link "$PWD"
+```
+
+`herdr plugin link` registers the manifest at its current path and never copies, symlinks, or builds anything, so the plugin runs straight from this working tree. That is why **`npm install` is required before linking** — unlike `herdr plugin install`, nothing runs the build step for you, and a linked plugin must already be runnable.
+
+Edits to `src/` then take effect on the next hook or pane launch with no rebuild and no re-link.
 
 ```bash
 npm run check      # typecheck + lint + tests
@@ -93,7 +91,7 @@ Because event hooks only fire inside a running Herdr server, the fastest way to 
 herdr plugin log list --plugin j1nn0.herdr-harvest --limit 5
 ```
 
-Harvest also ships a manual capture path for deterministic testing, so you do not have to wait for a real `done`:
+Harvest also ships a manual capture path for deterministic testing, so you do not have to wait for an agent to finish on its own:
 
 ```bash
 node src/bin/capture.ts --pane <pane-id>
@@ -206,33 +204,6 @@ Herdr `pane.agent_status_changed`
   → SQLite
 ```
 
-The split at the top is deliberate. The SDK answers *"is this a valid `pane.agent_status_changed` event?"*; Harvest answers *"is this a completion Harvest wants to capture?"*
-
-### Deciding what counts as a completion
-
-A completion arrives as either `done` or `idle`, and nothing in the event says which
-it will be — so Harvest has to decide from what it saw before. A bare `idle` proves
-nothing: starting an agent emits one, and so does starting a replacement agent in a
-reused pane. Capturing every `idle` would invent results.
-
-Harvest therefore keeps the last status it observed per Herdr session and pane, in
-SQLite, because every event hook is a separate process:
-
-| Incoming | Previously observed | Capture? |
-| -------- | ------------------- | -------- |
-| `done`   | anything but `done` | yes — `done` only ever follows real work |
-| `done`   | `done`              | no — duplicate delivery |
-| `idle`   | `working`           | yes — this is the completion you were watching |
-| `idle`   | anything else       | no — startup, pane reuse, or an already-seen result |
-| other    | —                   | no, but the status is recorded |
-
-The read and the write happen in one `BEGIN IMMEDIATE` transaction, so two hook
-processes handling the same event cannot both believe they saw `working` first.
-
-`blocked` is deliberately not treated as work in progress. Herdr uses it for an
-approval or question prompt, so `blocked → idle` may just mean you pressed Escape.
-Missing that rare completion is better than fabricating a result you never got.
-
 and the read path is separate:
 
 ```
@@ -247,6 +218,34 @@ Two boundaries are enforced deliberately:
 - **The TUI never imports SQLite or the Herdr client.** It talks only to `InboxPort`, so the entire inbox can be tested against a fake port, and storage or clipboard strategies can change without touching presentation.
 
 The SDK's `HerdrClient` is the only thing that spawns Herdr, which is what lets the whole test suite run with **no Herdr server** — tests drive `createMockHerdrClient()` from `@j1nn0/herdr-plugin-sdk/testing` instead.
+
+### Built on the plugin SDK
+
+Harvest talks to Herdr through [`@j1nn0/herdr-plugin-sdk`](https://www.npmjs.com/package/@j1nn0/herdr-plugin-sdk), alongside Ink and React. There are three layers, and it is worth keeping them apart:
+
+- **Herdr Plugin v1** is the official API: a command-based contract of manifest entrypoints, environment variables, and CLI commands.
+- **`@j1nn0/herdr-plugin-sdk`** is an unofficial typed TypeScript convenience layer over that contract. It validates the Herdr runtime and event payloads, executes Herdr CLI calls, and exposes typed errors.
+- **Harvest** is an application built on that layer. It decides which observed lifecycle transitions count as a completion, and owns capture policy, metadata projection, the read fallback, deduplication, storage, clipboard, and the inbox.
+
+So Harvest ships no Herdr subprocess handling and no protocol parsing of its own.
+
+### Deciding what counts as a completion
+
+Harvest tracks the previous agent status per Herdr session and pane, so that it can recognise a `working → idle` transition without treating every `idle` as a completion. That state is persisted rather than held in memory, because each event hook runs as a separate process.
+
+The rules it applies:
+
+| Incoming | Previously observed | Capture? |
+| -------- | ------------------- | -------- |
+| `done`   | anything but `done` | yes — `done` follows real work |
+| `done`   | `done`              | no — duplicate delivery |
+| `idle`   | `working`           | yes — a completion you were already watching |
+| `idle`   | anything else       | no — startup, pane reuse, or an already-seen result |
+| other    | —                   | no, but the status is recorded |
+
+This matters because a bare `idle` proves nothing on its own: starting an agent produces one, and so does starting a replacement agent in a reused pane. Capturing every `idle` would invent results. Reading the previous status and recording the new one happen together in a single transaction, so two hook processes handling the same event cannot both conclude they saw `working` first.
+
+`blocked` is deliberately not treated as work in progress. Herdr uses it for an approval or question prompt, so `blocked → idle` may equally mean you cancelled. Missing that rare completion is better than fabricating a result you never got.
 
 ### Deduplication
 
