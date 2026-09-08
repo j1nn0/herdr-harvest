@@ -1,0 +1,4 @@
+# Biome formats with LF. Without this, Git's Windows default (core.autocrlf=true)
+# checks every file out with CRLF and `biome check` then reports the entire
+# repository as misformatted on the Windows CI leg.
+* text=auto eol=lf
