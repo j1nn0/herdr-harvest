@@ -2,7 +2,7 @@ id = "j1nn0.herdr-harvest"
 name = "Harvest"
 version = "0.1.0"
 min_herdr_version = "0.8.2"
-description = "Harvest the results of your agent herd — capture agent output on done into a durable Result Inbox."
+description = "Harvest the results of your agent herd — capture an agent's output when it finishes into a durable Result Inbox."
 platforms = ["linux", "macos", "windows"]
 
 # `herdr plugin install` clones this repository without `node_modules/`, so the
@@ -17,8 +17,10 @@ platforms = ["linux", "macos", "windows"]
 [[build]]
 command = ["npm", "ci", "--omit=dev"]
 
-# Fires on every pane agent status transition. The hook itself filters for
-# `agent_status == "done"` and exits immediately otherwise.
+# Fires on every pane agent status transition. The hook needs all of them: it
+# records the observed status per Herdr session and pane so it can tell a real
+# completion from an ordinary `idle`, and captures only the transitions that
+# qualify.
 [[events]]
 on = "pane.agent_status_changed"
 command = ["node", "src/bin/hook.ts"]
