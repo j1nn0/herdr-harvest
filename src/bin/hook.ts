@@ -1,4 +1,4 @@
-import { HerdrEnvError, readPluginEvent } from "@j1nn0/herdr-plugin-sdk";
+import { HerdrEnvError, isPaneAgentStatusChanged, readPluginEvent } from "@j1nn0/herdr-plugin-sdk";
 import { decideCompletion } from "../capture/completion.ts";
 import type { CaptureOutcome } from "../capture/orchestrator.ts";
 import { runCapture } from "../capture/runner.ts";
@@ -22,12 +22,23 @@ export async function runHook(): Promise<number> {
 
   const decision = decideCompletion(event);
   if (decision.kind === "ignored") {
+    if (isPaneAgentStatusChanged(event)) {
+      const lifecycle = await runCapture(event.data.pane_id, process.env, {
+        lifecycle: { agentStatus: event.data.agent_status },
+      });
+      if (lifecycle.outcome.status === "failed") {
+        writeWarnings(lifecycle.warnings);
+        writeSummary(event.data.pane_id, lifecycle.outcome);
+        return 1;
+      }
+    }
     return 0;
   }
 
   const { outcome, warnings } = await runCapture(decision.paneId, process.env, {
     workspaceIdHint: decision.workspaceId,
     agentKindHint: decision.agentKind,
+    lifecycle: { agentStatus: decision.agentStatus },
   });
   writeWarnings(warnings);
   writeSummary(decision.paneId, outcome);

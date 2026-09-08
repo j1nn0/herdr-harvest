@@ -4,6 +4,7 @@ import { loadConfig } from "../config/config.ts";
 import { openDatabase } from "../persistence/database.ts";
 import type { ResultStore } from "../persistence/result-store.ts";
 import { SqliteResultStore } from "../persistence/result-store.ts";
+import { shouldCaptureCompletion } from "./completion.ts";
 import type { CaptureOutcome } from "./orchestrator.ts";
 import { captureCompletion } from "./orchestrator.ts";
 
@@ -11,6 +12,9 @@ export interface CaptureRunOptions {
   workspaceIdHint?: string | null;
   agentKindHint?: string | null;
   now?: () => number;
+  lifecycle?: {
+    agentStatus: string;
+  };
 }
 
 export async function runCapture(
@@ -21,6 +25,7 @@ export async function runCapture(
   let warnings: string[] = [];
   let store: ResultStore | null = null;
   let database: ReturnType<typeof openDatabase> | null = null;
+  const now = extra.now ?? Date.now;
 
   try {
     const loaded = loadConfig(env);
@@ -28,13 +33,30 @@ export async function runCapture(
     const config: HarvestConfig = loaded.config;
     database = openDatabase(config.databasePath);
     store = new SqliteResultStore(database);
+    if (extra.lifecycle !== undefined) {
+      const observed = store.observePaneStatus({
+        herdrSessionKey: config.herdrSessionKey,
+        paneId,
+        agentStatus: extra.lifecycle.agentStatus,
+        atMs: now(),
+      });
+      if (!shouldCaptureCompletion(extra.lifecycle.agentStatus, observed.previousStatus)) {
+        return {
+          outcome: {
+            status: "skipped",
+            reason: lifecycleSkipReason(extra.lifecycle.agentStatus, observed.previousStatus),
+          },
+          warnings,
+        };
+      }
+    }
     const client = createHerdrClient({ env });
     const outcome = await captureCompletion(
       {
         client,
         store,
         config,
-        now: extra.now ?? Date.now,
+        now,
       },
       {
         paneId,
@@ -70,4 +92,16 @@ function errorMessage(error: unknown): string {
     return error.message;
   }
   return String(error);
+}
+
+function lifecycleSkipReason(agentStatus: string, previousStatus: string | null): string {
+  if (agentStatus === "idle") {
+    return previousStatus === null
+      ? "ignored idle without preceding work"
+      : `ignored idle after ${previousStatus}`;
+  }
+  if (agentStatus === "done") {
+    return "ignored duplicate done after done";
+  }
+  return `ignored agent status ${agentStatus}`;
 }

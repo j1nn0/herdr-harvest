@@ -50,7 +50,27 @@ const addHerdrSession: Migration = {
   },
 };
 
-export const MIGRATIONS: readonly Migration[] = [createResults, addHerdrSession];
+const createPaneLifecycle: Migration = {
+  version: 3,
+  name: "create-pane-lifecycle",
+  up(db) {
+    db.exec(`
+      CREATE TABLE pane_lifecycle (
+        herdr_session_key TEXT    NOT NULL,
+        pane_id           TEXT    NOT NULL,
+        agent_status      TEXT    NOT NULL,
+        updated_at_ms     INTEGER NOT NULL,
+        PRIMARY KEY (herdr_session_key, pane_id)
+      );
+    `);
+  },
+};
+
+export const MIGRATIONS: readonly Migration[] = [
+  createResults,
+  addHerdrSession,
+  createPaneLifecycle,
+];
 
 export function runMigrations(db: DatabaseSync): { from: number; to: number; applied: string[] } {
   const newestVersion = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

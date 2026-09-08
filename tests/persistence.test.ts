@@ -188,13 +188,13 @@ test("upgrades a v1 database without changing legacy rows", () => {
 
     assert.deepEqual(runMigrations(db), {
       from: 1,
-      to: 2,
-      applied: ["add-herdr-session"],
+      to: 3,
+      applied: ["add-herdr-session", "create-pane-lifecycle"],
     });
     const version = db.prepare("PRAGMA user_version").get() as
       | { user_version?: number }
       | undefined;
-    assert.equal(version?.user_version, 2);
+    assert.equal(version?.user_version, 3);
 
     const store = new SqliteResultStore(db);
     assert.deepEqual(store.get(legacy.id), {
@@ -211,6 +211,124 @@ test("upgrades a v1 database without changing legacy rows", () => {
       agentSessionValue: legacy.agentSessionValue,
       herdrSessionKey: null,
       herdrSessionLabel: null,
+      captureSource: legacy.captureSource,
+      captureLineCount: legacy.captureLineCount,
+      rawText: legacy.rawText,
+      contentHash: legacy.contentHash,
+      dedupKey: legacy.dedupKey,
+      readAtMs: legacy.readAtMs,
+      archivedAtMs: legacy.archivedAtMs,
+    });
+  } finally {
+    db.close();
+  }
+});
+
+test("upgrades a v2 database without changing legacy rows", () => {
+  const db = openDatabase(":memory:");
+  const v1 = MIGRATIONS[0];
+  const v2 = MIGRATIONS[1];
+  if (v1 === undefined || v2 === undefined) {
+    throw new Error("Expected the v1 and v2 migrations.");
+  }
+
+  const legacy = {
+    id: "legacy-v2-result",
+    capturedAtMs: 223_344,
+    workspaceId: "v2-workspace",
+    workspaceName: "V2 Workspace",
+    tabId: "v2-tab",
+    paneId: "v2-pane",
+    paneName: "V2 Pane",
+    agentName: "V2 Agent",
+    agentKind: "v2-kind",
+    agentSessionKind: "id",
+    agentSessionValue: "v2-session",
+    captureSource: "detection",
+    captureLineCount: 123,
+    rawText: "  v2 output  \\n世界 🚀\\n",
+    contentHash: "v2-content-hash",
+    dedupKey: "v2-dedup-key",
+    herdrSessionKey: "socket-v2",
+    herdrSessionLabel: "v2",
+    readAtMs: 334_455,
+    archivedAtMs: 445_566,
+  };
+
+  try {
+    v1.up(db);
+    db.exec("PRAGMA user_version = 1");
+    v2.up(db);
+    db.exec("PRAGMA user_version = 2");
+    db.prepare(`
+      INSERT INTO results (
+        id,
+        captured_at_ms,
+        workspace_id,
+        workspace_name,
+        tab_id,
+        pane_id,
+        pane_name,
+        agent_name,
+        agent_kind,
+        agent_session_kind,
+        agent_session_value,
+        capture_source,
+        capture_line_count,
+        raw_text,
+        content_hash,
+        dedup_key,
+        herdr_session_key,
+        herdr_session_label,
+        read_at_ms,
+        archived_at_ms
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      legacy.id,
+      legacy.capturedAtMs,
+      legacy.workspaceId,
+      legacy.workspaceName,
+      legacy.tabId,
+      legacy.paneId,
+      legacy.paneName,
+      legacy.agentName,
+      legacy.agentKind,
+      legacy.agentSessionKind,
+      legacy.agentSessionValue,
+      legacy.captureSource,
+      legacy.captureLineCount,
+      legacy.rawText,
+      legacy.contentHash,
+      legacy.dedupKey,
+      legacy.herdrSessionKey,
+      legacy.herdrSessionLabel,
+      legacy.readAtMs,
+      legacy.archivedAtMs,
+    );
+
+    assert.deepEqual(runMigrations(db), {
+      from: 2,
+      to: 3,
+      applied: ["create-pane-lifecycle"],
+    });
+    const version = db.prepare("PRAGMA user_version").get();
+    assert.equal(version?.user_version, 3);
+
+    const store = new SqliteResultStore(db);
+    assert.deepEqual(store.get(legacy.id), {
+      id: legacy.id,
+      capturedAtMs: legacy.capturedAtMs,
+      workspaceId: legacy.workspaceId,
+      workspaceName: legacy.workspaceName,
+      tabId: legacy.tabId,
+      paneId: legacy.paneId,
+      paneName: legacy.paneName,
+      agentName: legacy.agentName,
+      agentKind: legacy.agentKind,
+      agentSessionKind: legacy.agentSessionKind,
+      agentSessionValue: legacy.agentSessionValue,
+      herdrSessionKey: legacy.herdrSessionKey,
+      herdrSessionLabel: legacy.herdrSessionLabel,
       captureSource: legacy.captureSource,
       captureLineCount: legacy.captureLineCount,
       rawText: legacy.rawText,
@@ -497,6 +615,88 @@ describe("SqliteResultStore", () => {
       store1.close();
       store2.close();
       rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("observes and upserts pane lifecycle status by session and pane", () => {
+    const db = openDatabase(":memory:");
+    const store = new SqliteResultStore(db);
+    try {
+      assert.deepEqual(
+        store.observePaneStatus({
+          herdrSessionKey: "socket-a",
+          paneId: "pane-a",
+          agentStatus: "working",
+          atMs: 100,
+        }),
+        { previousStatus: null },
+      );
+      assert.deepEqual(
+        store.observePaneStatus({
+          herdrSessionKey: "socket-a",
+          paneId: "pane-a",
+          agentStatus: "idle",
+          atMs: 200,
+        }),
+        { previousStatus: "working" },
+      );
+      assert.deepEqual(
+        store.observePaneStatus({
+          herdrSessionKey: "socket-a",
+          paneId: "pane-b",
+          agentStatus: "idle",
+          atMs: 300,
+        }),
+        { previousStatus: null },
+      );
+      assert.deepEqual(
+        store.observePaneStatus({
+          herdrSessionKey: "socket-b",
+          paneId: "pane-a",
+          agentStatus: "unknown",
+          atMs: 400,
+        }),
+        { previousStatus: null },
+      );
+      assert.deepEqual(
+        store.observePaneStatus({
+          herdrSessionKey: "socket-a",
+          paneId: "pane-a",
+          agentStatus: "done",
+          atMs: 500,
+        }),
+        { previousStatus: "idle" },
+      );
+
+      assert.deepEqual(
+        store.observePaneStatus({
+          herdrSessionKey: null,
+          paneId: "pane-unknown",
+          agentStatus: "idle",
+          atMs: 600,
+        }),
+        { previousStatus: null },
+      );
+      assert.deepEqual(
+        store.observePaneStatus({
+          herdrSessionKey: "",
+          paneId: "pane-unknown",
+          agentStatus: "working",
+          atMs: 700,
+        }),
+        { previousStatus: "idle" },
+      );
+      assert.deepEqual(
+        store.observePaneStatus({
+          herdrSessionKey: null,
+          paneId: "pane-unknown",
+          agentStatus: "done",
+          atMs: 800,
+        }),
+        { previousStatus: "working" },
+      );
+    } finally {
+      store.close();
     }
   });
 });

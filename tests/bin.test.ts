@@ -15,7 +15,7 @@ const execFileAsync = promisify(execFile);
 const REPOSITORY_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 
 describe("hook entrypoint", () => {
-  test("captures one done event and deduplicates an identical rerun", async () => {
+  test("captures one done event and skips an identical rerun", async () => {
     const fixture = makeFixture();
 
     try {
@@ -29,7 +29,8 @@ describe("hook entrypoint", () => {
       assert.equal(first.exitCode, 0);
       assert.equal(second.exitCode, 0);
       assert.equal(summary(first.stdout).status, "captured");
-      assert.equal(summary(second.stdout).status, "duplicate");
+      assert.equal(summary(second.stdout).status, "skipped");
+      assert.equal(summary(second.stdout).reason, "ignored duplicate done after done");
       assert.equal(readRows(fixture.stateDirectory).length, 1);
       assert.equal(readRows(fixture.stateDirectory)[0]?.rawText, "stub output\n\n世界 🚀  \n");
     } finally {
@@ -48,6 +49,55 @@ describe("hook entrypoint", () => {
 
       assert.equal(result.exitCode, 0);
       assert.equal(result.stdout, "");
+      assert.equal(result.stderr, "");
+      assert.equal(readRows(fixture.stateDirectory).length, 0);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test("captures a foreground completion reported as working then idle exactly once", async () => {
+    const fixture = makeFixture();
+
+    try {
+      const working = await runHook({
+        ...fixture.env,
+        HERDR_PLUGIN_EVENT_JSON: eventWithStatus("working"),
+      });
+      const idle = await runHook({
+        ...fixture.env,
+        HERDR_PLUGIN_EVENT_JSON: eventWithStatus("idle"),
+      });
+      const duplicateIdle = await runHook({
+        ...fixture.env,
+        HERDR_PLUGIN_EVENT_JSON: eventWithStatus("idle"),
+      });
+
+      assert.equal(working.exitCode, 0);
+      assert.equal(working.stdout, "");
+      assert.equal(working.stderr, "");
+      assert.equal(idle.exitCode, 0);
+      assert.equal(summary(idle.stdout).status, "captured");
+      assert.equal(duplicateIdle.exitCode, 0);
+      assert.equal(summary(duplicateIdle.stdout).status, "skipped");
+      assert.equal(readRows(fixture.stateDirectory).length, 1);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test("skips a lone idle event without writing a result", async () => {
+    const fixture = makeFixture();
+
+    try {
+      const result = await runHook({
+        ...fixture.env,
+        HERDR_PLUGIN_EVENT_JSON: eventWithStatus("idle"),
+      });
+
+      assert.equal(result.exitCode, 0);
+      assert.equal(summary(result.stdout).status, "skipped");
+      assert.equal(summary(result.stdout).reason, "ignored idle without preceding work");
       assert.equal(result.stderr, "");
       assert.equal(readRows(fixture.stateDirectory).length, 0);
     } finally {

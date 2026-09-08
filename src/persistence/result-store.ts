@@ -12,6 +12,12 @@ export type InsertOutcome =
 
 export interface ResultStore {
   insert(input: CaptureInput): InsertOutcome;
+  observePaneStatus(input: {
+    herdrSessionKey: string | null;
+    paneId: string;
+    agentStatus: string;
+    atMs: number;
+  }): { previousStatus: string | null };
   list(options?: { includeArchived?: boolean; limit?: number }): HarvestResult[];
   get(id: string): HarvestResult | null;
   markRead(id: string, atMs: number): HarvestResult | null;
@@ -119,6 +125,35 @@ export class SqliteResultStore implements ResultStore {
     };
   }
 
+  observePaneStatus(input: {
+    herdrSessionKey: string | null;
+    paneId: string;
+    agentStatus: string;
+    atMs: number;
+  }): { previousStatus: string | null } {
+    const sessionKey = lifecycleSessionKey(input.herdrSessionKey);
+    return withTransaction(this.db, () => {
+      const row = this.db
+        .prepare(
+          "SELECT agent_status FROM pane_lifecycle WHERE herdr_session_key = ? AND pane_id = ?",
+        )
+        .get(sessionKey, input.paneId);
+      const previousStatus = typeof row?.agent_status === "string" ? row.agent_status : null;
+
+      this.db
+        .prepare(`
+          INSERT INTO pane_lifecycle (herdr_session_key, pane_id, agent_status, updated_at_ms)
+          VALUES (?, ?, ?, ?)
+          ON CONFLICT(herdr_session_key, pane_id) DO UPDATE SET
+            agent_status = excluded.agent_status,
+            updated_at_ms = excluded.updated_at_ms
+        `)
+        .run(sessionKey, input.paneId, input.agentStatus, input.atMs);
+
+      return { previousStatus };
+    });
+  }
+
   list(options: { includeArchived?: boolean; limit?: number } = {}): HarvestResult[] {
     const limit = options.limit;
     if (limit !== undefined && (!Number.isInteger(limit) || limit < 0)) {
@@ -199,4 +234,8 @@ function mapRow(row: SqlRow): HarvestResult {
     readAtMs: row.read_at_ms as number | null,
     archivedAtMs: row.archived_at_ms as number | null,
   };
+}
+
+function lifecycleSessionKey(herdrSessionKey: string | null): string {
+  return herdrSessionKey ?? "";
 }

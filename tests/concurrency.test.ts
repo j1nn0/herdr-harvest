@@ -13,6 +13,11 @@ import { SqliteResultStore } from "../src/persistence/result-store.ts";
 
 const execFileAsync = promisify(execFile);
 const worker = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "insert-worker.ts");
+const lifecycleWorker = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "fixtures",
+  "observe-worker.ts",
+);
 
 describe("concurrent completion events across processes", () => {
   test("eight racing processes produce exactly one result and none fail", async () => {
@@ -40,6 +45,38 @@ describe("concurrent completion events across processes", () => {
       } finally {
         store.close();
       }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("serializes concurrent lifecycle observations so only one sees working", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "herdr-harvest-lifecycle-race-"));
+    const databasePath = join(directory, "harvest.db");
+    const seedStore = new SqliteResultStore(openDatabase(databasePath));
+    try {
+      assert.deepEqual(
+        seedStore.observePaneStatus({
+          herdrSessionKey: "socket-race",
+          paneId: "pane-race",
+          agentStatus: "working",
+          atMs: 1,
+        }),
+        { previousStatus: null },
+      );
+    } finally {
+      seedStore.close();
+    }
+
+    try {
+      const runs = await Promise.all(
+        Array.from({ length: 2 }, () =>
+          execFileAsync(process.execPath, [lifecycleWorker, databasePath, "idle"], {
+            encoding: "utf8",
+          }),
+        ),
+      );
+      assert.deepEqual(runs.map((run) => run.stdout.trim()).sort(), ["idle", "working"]);
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
