@@ -1,48 +1,35 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { spawnableCommand } from "./helpers/spawnable-command.ts";
 
 const execFileAsync = promisify(execFile);
 const REPOSITORY_ROOT = fileURLToPath(new URL("..", import.meta.url));
+
+const HERDR_STUB_BODY = [
+  'const fs = require("node:fs");',
+  "fs.writeFileSync(process.env.ARGS_FILE, JSON.stringify(process.argv.slice(2)));",
+  'if (process.env.REPORT_ERROR === "1") {',
+  '  process.stderr.write(JSON.stringify({ error: { code: "pane_open_failed", message: "Pane open failed." } }));',
+  "  process.exitCode = 7;",
+  '} else if (process.env.REPORT_FAILURE === "1") {',
+  '  process.stderr.write("stub command failed");',
+  "  process.exitCode = 9;",
+  "} else {",
+  '  process.stdout.write("accepted");',
+  "}",
+].join("\n");
 
 interface CommandRun {
   exitCode: number;
   stdout: string;
   stderr: string;
 }
-
-function commandPath(directory: string): string {
-  const path = join(directory, "herdr-stub");
-  writeFileSync(
-    path,
-    `#!${process.execPath}
-const fs = require("node:fs");
-fs.writeFileSync(process.env.ARGS_FILE, JSON.stringify(process.argv.slice(2)));
-if (process.env.REPORT_ERROR === "1") {
-  process.stderr.write(
-    JSON.stringify({
-      error: { code: "pane_open_failed", message: "Pane open failed." },
-    }),
-  );
-  process.exitCode = 7;
-} else if (process.env.REPORT_FAILURE === "1") {
-  process.stderr.write("stub command failed");
-  process.exitCode = 9;
-} else {
-  process.stdout.write("accepted");
-}
-`,
-    { mode: 0o755 },
-  );
-  chmodSync(path, 0o755);
-  return path;
-}
-
 async function runOpen(env: NodeJS.ProcessEnv): Promise<CommandRun> {
   try {
     const result = await execFileAsync(process.execPath, ["src/bin/open.ts"], {
@@ -66,9 +53,11 @@ describe("open entrypoint", () => {
     const directory = mkdtempSync(join(tmpdir(), "herdr-harvest-open-"));
     const argsPath = join(directory, "args.json");
     try {
+      const command = spawnableCommand(directory, "herdr-stub", HERDR_STUB_BODY);
       const result = await runOpen({
         ...process.env,
-        HERDR_BIN_PATH: commandPath(directory),
+        ...command.env,
+        HERDR_BIN_PATH: command.path,
         ARGS_FILE: argsPath,
       });
 
@@ -94,9 +83,11 @@ describe("open entrypoint", () => {
   test("reports a structured Herdr CLI error", async () => {
     const directory = mkdtempSync(join(tmpdir(), "herdr-harvest-open-"));
     try {
+      const command = spawnableCommand(directory, "herdr-stub", HERDR_STUB_BODY);
       const result = await runOpen({
         ...process.env,
-        HERDR_BIN_PATH: commandPath(directory),
+        ...command.env,
+        HERDR_BIN_PATH: command.path,
         ARGS_FILE: join(directory, "args.json"),
         REPORT_ERROR: "1",
       });
@@ -114,9 +105,11 @@ describe("open entrypoint", () => {
   test("reports a non-zero Herdr process failure", async () => {
     const directory = mkdtempSync(join(tmpdir(), "herdr-harvest-open-"));
     try {
+      const command = spawnableCommand(directory, "herdr-stub", HERDR_STUB_BODY);
       const result = await runOpen({
         ...process.env,
-        HERDR_BIN_PATH: commandPath(directory),
+        ...command.env,
+        HERDR_BIN_PATH: command.path,
         ARGS_FILE: join(directory, "args.json"),
         REPORT_FAILURE: "1",
       });

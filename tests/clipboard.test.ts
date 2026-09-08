@@ -10,6 +10,7 @@ import {
   createSystemClipboard,
 } from "../src/clipboard/index.ts";
 import { ClipboardError } from "../src/clipboard/provider.ts";
+import { spawnableCommand } from "./helpers/spawnable-command.ts";
 
 type ClipboardStream = NodeJS.WritableStream & { isTTY?: boolean };
 
@@ -88,7 +89,10 @@ describe("OSC 52 clipboard", () => {
 });
 
 describe("system clipboard", () => {
-  test("copies through a PATH executable and confirms a zero exit", async () => {
+  // Extensionless fakes are unspawnable on Windows; this behavior stays covered on the macOS and Ubuntu legs.
+  test("copies through a PATH executable and confirms a zero exit", {
+    skip: process.platform === "win32",
+  }, async () => {
     const directory = mkdtempSync(join(tmpdir(), "herdr-harvest-clipboard-"));
     const capturePath = join(directory, "captured.bin");
     try {
@@ -115,7 +119,10 @@ describe("system clipboard", () => {
     }
   });
 
-  test("rejects a non-zero executable exit with the provider and reason", async () => {
+  // Extensionless fakes are unspawnable on Windows; this behavior stays covered on the macOS and Ubuntu legs.
+  test("rejects a non-zero executable exit with the provider and reason", {
+    skip: process.platform === "win32",
+  }, async () => {
     const directory = mkdtempSync(join(tmpdir(), "herdr-harvest-clipboard-"));
     try {
       commandPath(
@@ -132,6 +139,66 @@ describe("system clipboard", () => {
         assert.match(error.message, /stub failed/);
         assert.equal(error.attempts.length, 1);
         assert.match(error.attempts[0] ?? "", /xclip/);
+        assert.match(error.attempts[0] ?? "", /stub failed/);
+        return true;
+      });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("spawns clip.exe through the Windows provider on every platform", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "herdr-harvest-clipboard-"));
+    const capturePath = join(directory, "captured.bin");
+    try {
+      const { env } = spawnableCommand(
+        directory,
+        "clip.exe",
+        [
+          'const fs = require("node:fs");',
+          "const chunks = [];",
+          'process.stdin.on("data", (chunk) => chunks.push(chunk));',
+          'process.stdin.on("end", () => fs.writeFileSync(process.env.CAPTURE_FILE, Buffer.concat(chunks)));',
+        ].join("\n"),
+      );
+      const clipboard = createSystemClipboard("win32", {
+        PATH: directory,
+        ...env,
+        CAPTURE_FILE: capturePath,
+      });
+      assert.ok(clipboard !== null);
+
+      const report = await clipboard.copy("exact 世界");
+
+      assert.deepEqual(report, { provider: "clip.exe", confirmed: true });
+      assert.deepEqual(readFileSync(capturePath), Buffer.from("exact 世界"));
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects a clip.exe non-zero exit on every platform", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "herdr-harvest-clipboard-"));
+    try {
+      const { env } = spawnableCommand(
+        directory,
+        "clip.exe",
+        'process.stdin.resume(); process.stdin.on("end", () => { process.stderr.write("stub failed"); process.exit(7); });',
+      );
+      const clipboard = createSystemClipboard("win32", {
+        PATH: directory,
+        ...env,
+        STUB_STDERR: "stub failed",
+        STUB_EXIT: "7",
+      });
+      assert.ok(clipboard !== null);
+
+      await assert.rejects(clipboard.copy("hello"), (error: unknown) => {
+        assert.ok(error instanceof ClipboardError);
+        assert.match(error.message, /clip\.exe/);
+        assert.match(error.message, /stub failed/);
+        assert.equal(error.attempts.length, 1);
+        assert.match(error.attempts[0] ?? "", /clip\.exe/);
         assert.match(error.attempts[0] ?? "", /stub failed/);
         return true;
       });
@@ -194,7 +261,10 @@ describe("system clipboard", () => {
 });
 
 describe("clipboard chain", () => {
-  test("falls back to OSC 52 after a system provider failure", async () => {
+  // Extensionless fakes are unspawnable on Windows; this behavior stays covered on the macOS and Ubuntu legs.
+  test("falls back to OSC 52 after a system provider failure", {
+    skip: process.platform === "win32",
+  }, async () => {
     const directory = mkdtempSync(join(tmpdir(), "herdr-harvest-clipboard-"));
     const writes: string[] = [];
     try {
@@ -214,7 +284,10 @@ describe("clipboard chain", () => {
     }
   });
 
-  test("reports every failed provider when the chain is exhausted", async () => {
+  // Extensionless fakes are unspawnable on Windows; this behavior stays covered on the macOS and Ubuntu legs.
+  test("reports every failed provider when the chain is exhausted", {
+    skip: process.platform === "win32",
+  }, async () => {
     const directory = mkdtempSync(join(tmpdir(), "herdr-harvest-clipboard-"));
     try {
       commandPath(
