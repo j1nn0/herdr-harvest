@@ -17,9 +17,18 @@ export function spawnableCommand(
       preloadPath,
       `if (process.execPath === process.env.HARVEST_STUB_BINARY) {
   const fs = require("node:fs");
+  const nodePath = require("node:path");
   const env = process.env;
+  // This is bare node, so the product's arguments start at index 1 rather than 2.
+  // Node has already treated the first one as a script path and rewritten it to an
+  // absolute path, so "plugin" arrives as "<cwd>/plugin"; every Herdr command starts
+  // with a bare subcommand word, so the basename restores the token the product sent.
+  const argv = process.argv.slice(1);
+  if (argv.length > 0) {
+    argv[0] = nodePath.basename(argv[0]);
+  }
   if (env.ARGS_FILE !== undefined) {
-    fs.writeFileSync(env.ARGS_FILE, JSON.stringify(process.argv.slice(1)));
+    fs.writeFileSync(env.ARGS_FILE, JSON.stringify(argv));
   }
   if (env.REPORT_ERROR === "1") {
     fs.writeSync(
@@ -47,7 +56,9 @@ export function spawnableCommand(
     process.exit(Number(env.STUB_EXIT || 0));
   }
   if (env.HARVEST_STUB_RUN_BODY === "1" && env.HARVEST_STUB_BODY !== undefined) {
-    process.argv.splice(1, 0, env.HARVEST_STUB_BODY);
+    // Rebuild argv the way the body expects it: the shared body is written for a
+    // POSIX shebang script, where its own arguments begin at index 2.
+    process.argv = [process.argv[0], env.HARVEST_STUB_BODY, ...argv];
     process.stdout.write = (text) => {
       fs.writeSync(1, text);
       return true;
