@@ -6,11 +6,16 @@ A [Herdr](https://herdr.dev) plugin that captures an AI coding agent's terminal 
 
 ## What it does
 
-When an agent running in a Herdr pane transitions to `done`, Harvest:
+When an agent running in a Herdr pane finishes, Harvest:
 
 1. reads that pane's recent terminal output,
 2. stores it in SQLite along with the agent, pane, workspace, and native session identity,
 3. and surfaces it in a keyboard-driven inbox.
+
+"Finishes" is less obvious than it sounds. Herdr reports a finished agent as `done`
+only while its result is still *unseen*; if the completion lands on a pane you happen
+to be looking at, the very same transition arrives as `idle` instead. Harvest captures
+both, so a result is never lost just because you were watching.
 
 It does this without focusing the agent's pane and without marking the agent as seen, so Herdr's own attention model is left exactly as it was.
 
@@ -201,7 +206,32 @@ Herdr `pane.agent_status_changed`
   → SQLite
 ```
 
-The split at the top is deliberate. The SDK answers *"is this a valid `pane.agent_status_changed` event?"*; Harvest answers *"is this a completion Harvest wants to capture?"* — and only `agent_status == "done"` is.
+The split at the top is deliberate. The SDK answers *"is this a valid `pane.agent_status_changed` event?"*; Harvest answers *"is this a completion Harvest wants to capture?"*
+
+### Deciding what counts as a completion
+
+A completion arrives as either `done` or `idle`, and nothing in the event says which
+it will be — so Harvest has to decide from what it saw before. A bare `idle` proves
+nothing: starting an agent emits one, and so does starting a replacement agent in a
+reused pane. Capturing every `idle` would invent results.
+
+Harvest therefore keeps the last status it observed per Herdr session and pane, in
+SQLite, because every event hook is a separate process:
+
+| Incoming | Previously observed | Capture? |
+| -------- | ------------------- | -------- |
+| `done`   | anything but `done` | yes — `done` only ever follows real work |
+| `done`   | `done`              | no — duplicate delivery |
+| `idle`   | `working`           | yes — this is the completion you were watching |
+| `idle`   | anything else       | no — startup, pane reuse, or an already-seen result |
+| other    | —                   | no, but the status is recorded |
+
+The read and the write happen in one `BEGIN IMMEDIATE` transaction, so two hook
+processes handling the same event cannot both believe they saw `working` first.
+
+`blocked` is deliberately not treated as work in progress. Herdr uses it for an
+approval or question prompt, so `blocked → idle` may just mean you pressed Escape.
+Missing that rare completion is better than fabricating a result you never got.
 
 and the read path is separate:
 
@@ -231,7 +261,8 @@ Components are length-prefixed before hashing so a value containing the separato
 
 - **Snapshots include surrounding screen content.** See [Completion snapshot, not a final answer](#completion-snapshot-not-a-final-answer).
 - **Identical output for the same agent session dedupes to one result.** If an agent genuinely produces byte-identical output twice in one session, the second is treated as a redelivery. Content-hash dedup cannot distinguish those cases.
-- **Capture is bounded by what Herdr can still see.** Full-screen agents draw in the terminal's alternate screen; Harvest captures at `done` while the agent is alive, but rows already scrolled out of reach are not recoverable.
+- **Capture is bounded by what Herdr can still see.** Full-screen agents draw in the terminal's alternate screen; Harvest captures while the agent is still alive, but rows already scrolled out of reach are not recoverable.
+- **A completion straight out of `blocked` is not captured.** If an agent finishes so quickly after you answer an approval prompt that Herdr never reports `working` in between, that result is missed. See [Deciding what counts as a completion](#deciding-what-counts-as-a-completion) for why that trade is deliberate.
 - **OSC 52 delivery cannot be confirmed.** It is reported as unconfirmed rather than as success.
 - **No archived-results view.** Archiving hides a result from the inbox; reading it back means querying the database directly.
 - **Herdr must be running** for capture to happen at all — there is no offline backfill.
