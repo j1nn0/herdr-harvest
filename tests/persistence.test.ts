@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { describe, test } from "node:test";
 
 import { contentHash, dedupKey } from "../src/domain/dedup.ts";
@@ -83,6 +84,31 @@ describe("migrations", () => {
       assert.deepEqual(store.get(result.id), result);
     } finally {
       store.close();
+    }
+  });
+
+  test("opens a cold database while another connection holds an exclusive lock", () => {
+    // Regression: `PRAGMA journal_mode = WAL` takes an exclusive lock, and SQLite does
+    // not run the busy handler for that conversion, so a second process opening a
+    // brand new database at the same moment used to die with "database is locked".
+    const directory = mkdtempSync(join(tmpdir(), "herdr-harvest-wal-race-"));
+    const databasePath = join(directory, "harvest.db");
+    let holder: ReturnType<typeof openDatabase> | null = null;
+    let contender: ReturnType<typeof openDatabase> | null = null;
+    try {
+      holder = new DatabaseSync(databasePath);
+      holder.exec("PRAGMA busy_timeout = 0");
+      holder.exec("CREATE TABLE lock_holder (id INTEGER PRIMARY KEY)");
+      holder.exec("BEGIN EXCLUSIVE");
+
+      contender = openDatabase(databasePath);
+      assert.ok(contender !== null);
+
+      holder.exec("ROLLBACK");
+    } finally {
+      contender?.close();
+      holder?.close();
+      rmSync(directory, { recursive: true, force: true });
     }
   });
 });
