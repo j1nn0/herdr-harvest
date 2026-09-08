@@ -24,12 +24,17 @@ function commandPath(directory: string): string {
 const fs = require("node:fs");
 fs.writeFileSync(process.env.ARGS_FILE, JSON.stringify(process.argv.slice(2)));
 if (process.env.REPORT_ERROR === "1") {
-  process.stdout.write(JSON.stringify({ error: { code: "pane_open_failed" }, id: "cli:open" }));
+  process.stderr.write(
+    JSON.stringify({
+      error: { code: "pane_open_failed", message: "Pane open failed." },
+    }),
+  );
+  process.exitCode = 7;
 } else if (process.env.REPORT_FAILURE === "1") {
   process.stderr.write("stub command failed");
   process.exitCode = 9;
 } else {
-  process.stdout.write(JSON.stringify({ id: "cli:open", result: { type: "pane_info" } }));
+  process.stdout.write("accepted");
 }
 `,
     { mode: 0o755 },
@@ -68,6 +73,7 @@ describe("open entrypoint", () => {
       });
 
       assert.equal(result.exitCode, 0);
+      assert.equal(result.stderr, "");
       assert.deepEqual(JSON.parse(readFileSync(argsPath, "utf8")), [
         "plugin",
         "pane",
@@ -85,7 +91,7 @@ describe("open entrypoint", () => {
     }
   });
 
-  test("treats a zero-exit JSON error envelope as failure", async () => {
+  test("reports a structured Herdr CLI error", async () => {
     const directory = mkdtempSync(join(tmpdir(), "herdr-harvest-open-"));
     try {
       const result = await runOpen({
@@ -96,8 +102,10 @@ describe("open entrypoint", () => {
       });
 
       assert.equal(result.exitCode, 1);
-      assert.match(result.stderr, /pane_open_failed/);
-      assert.match(result.stderr, /cli:open/);
+      assert.equal(
+        result.stderr,
+        "pane_open_failed: Herdr CLI error during cli.run (pane_open_failed): Pane open failed.\n",
+      );
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
@@ -114,7 +122,21 @@ describe("open entrypoint", () => {
       });
 
       assert.equal(result.exitCode, 1);
-      assert.match(result.stderr, /stub command failed/);
+      assert.equal(result.stderr, "stub command failed\n");
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+  test("reports an unspawnable Herdr binary", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "herdr-harvest-open-"));
+    try {
+      const result = await runOpen({
+        ...process.env,
+        HERDR_BIN_PATH: join(directory, "missing-herdr"),
+      });
+
+      assert.equal(result.exitCode, 1);
+      assert.ok(result.stderr.trim().length > 0);
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

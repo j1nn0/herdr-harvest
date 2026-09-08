@@ -23,6 +23,7 @@
     "typescript": "^7.0.2"
   },
   "dependencies": {
+    "@j1nn0/herdr-plugin-sdk": "^0.1.0",
     "ink": "^7.1.1",
     "react": "^19.2.8"
   }

@@ -1,7 +1,7 @@
+import { HerdrEnvError, readPluginContext } from "@j1nn0/herdr-plugin-sdk";
 import type { CaptureOutcome } from "../capture/orchestrator.ts";
 import { runCapture } from "../capture/runner.ts";
 
-type JsonObject = Record<string, unknown>;
 type PaneResolution = { paneId: string } | { error: string };
 
 const USAGE = "Usage: node src/bin/capture.ts [--pane <pane-id>]";
@@ -19,7 +19,7 @@ export function resolvePaneId(args: readonly string[], env: NodeJS.ProcessEnv): 
     return { paneId };
   }
 
-  const contextPaneId = focusedPaneId(env.HERDR_PLUGIN_CONTEXT_JSON);
+  const contextPaneId = focusedPaneId(env);
   if (contextPaneId !== null) {
     return { paneId: contextPaneId };
   }
@@ -45,22 +45,16 @@ export async function runManualCapture(): Promise<number> {
   return outcome.status === "failed" ? 1 : 0;
 }
 
-function focusedPaneId(raw: string | undefined): string | null {
-  if (raw === undefined) {
-    return null;
-  }
-
-  let parsed: unknown;
+function focusedPaneId(env: NodeJS.ProcessEnv): string | null {
   try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return null;
+    const paneId = readPluginContext(env).focused_pane_id;
+    return isNonEmptyString(paneId) ? paneId : null;
+  } catch (error) {
+    if (error instanceof HerdrEnvError) {
+      return null;
+    }
+    throw error;
   }
-
-  if (!isObject(parsed) || !isNonEmptyString(parsed.focused_pane_id)) {
-    return null;
-  }
-  return parsed.focused_pane_id;
 }
 
 function writeWarnings(warnings: readonly string[]): void {
@@ -91,10 +85,6 @@ function writeSummary(paneId: string, outcome: CaptureOutcome): void {
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
-}
-
-function isObject(value: unknown): value is JsonObject {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 try {

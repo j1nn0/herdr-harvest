@@ -11,9 +11,9 @@ platforms = ["linux", "macos", "windows"]
 # before registration, and aborts the install if one fails.
 #
 # `npm ci` rather than `npm install` so the tree is reproduced exactly from
-# `package-lock.json`, and `--omit=dev` because only `ink` and `react` are needed
-# at runtime. There is no compile step: Node 24 runs the TypeScript sources
-# directly via type stripping.
+# `package-lock.json`, and `--omit=dev` because only the runtime dependencies
+# (`@j1nn0/herdr-plugin-sdk`, `ink`, `react`) are needed. There is no compile
+# step: Node 24 runs the TypeScript sources directly via type stripping.
 [[build]]
 command = ["npm", "ci", "--omit=dev"]
 

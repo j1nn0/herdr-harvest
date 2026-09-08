@@ -1,8 +1,11 @@
+import type { HerdrClient, ReadOptions } from "@j1nn0/herdr-plugin-sdk";
+import { isHerdrCliError } from "@j1nn0/herdr-plugin-sdk";
 import type { HarvestConfig } from "../config/config.ts";
 import type { CaptureInput, HarvestResult } from "../domain/result.ts";
-import type { HerdrClient, HerdrTargetInfo } from "../herdr/types.ts";
-import { HerdrCliError } from "../herdr/types.ts";
+import { getAgentInfo, getPaneInfo } from "../herdr/lookup.ts";
+import type { HerdrTargetInfo } from "../herdr/types.ts";
 import type { ResultStore } from "../persistence/result-store.ts";
+import { CaptureReadError } from "./errors.ts";
 
 export type CaptureOutcome =
   | { status: "captured"; result: HarvestResult }
@@ -35,7 +38,7 @@ export async function captureCompletion(
 
     const workspaceId = metadata.workspaceId ?? request.workspaceIdHint ?? null;
     const agentKind = metadata.agentKind ?? request.agentKindHint ?? null;
-    const readOptions = {
+    const readOptions: ReadOptions = {
       source: deps.config.captureSource,
       lines: deps.config.captureLines,
     };
@@ -47,8 +50,9 @@ export async function captureCompletion(
     let workspaceName: string | null = null;
     if (workspaceId !== null) {
       try {
-        const resolvedName = await deps.client.getWorkspaceName(workspaceId);
-        workspaceName = typeof resolvedName === "string" ? resolvedName : null;
+        const workspaces = await deps.client.workspace.list();
+        const workspace = workspaces.find((candidate) => candidate.workspace_id === workspaceId);
+        workspaceName = workspace?.label ?? null;
       } catch {
         workspaceName = null;
       }
@@ -86,49 +90,38 @@ async function resolveMetadata(
   client: HerdrClient,
   request: CaptureRequest,
 ): Promise<HerdrTargetInfo | null> {
-  const agent = await client.getAgent(request.paneId);
+  const agent = await getAgentInfo(client, request.paneId);
   if (agent !== null) {
     return agent;
   }
-  return client.getPane(request.paneId);
+  return getPaneInfo(client, request.paneId);
 }
 
 async function readOutput(
   client: HerdrClient,
   paneId: string,
-  options: { source: string; lines: number },
+  options: ReadOptions,
 ): Promise<string> {
   try {
-    return await client.readAgent(paneId, options);
+    return await client.agent.read(paneId, options);
   } catch (agentError) {
-    const agentCode = errorCode(agentError);
     try {
-      return await client.readPane(paneId, options);
+      return await client.pane.read(paneId, options);
     } catch (paneError) {
-      throw new HerdrCliError(
-        "capture_read_failed",
-        `agent read failed with ${agentCode}; pane read failed with ${errorCode(paneError)}`,
+      throw new CaptureReadError(
+        `agent read failed with ${errorMessage(agentError)}; pane read failed with ${errorMessage(paneError)}`,
+        { agentError, paneError },
       );
     }
   }
 }
 
-function errorCode(error: unknown): string {
-  if (error instanceof HerdrCliError) {
-    return error.code;
-  }
-  if (error instanceof Error && error.name.length > 0) {
-    return error.name;
-  }
-  return "unknown_error";
-}
-
 function errorMessage(error: unknown): string {
-  if (error instanceof HerdrCliError) {
+  if (isHerdrCliError(error)) {
     return `${error.code}: ${error.message}`;
   }
-  if (error instanceof Error && error.message.length > 0) {
-    return error.message;
+  if (error instanceof Error) {
+    return error.message.length > 0 ? `${error.name}: ${error.message}` : error.name;
   }
   return String(error);
 }

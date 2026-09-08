@@ -1,16 +1,22 @@
 import { join } from "node:path";
+import type { ReadSource } from "@j1nn0/herdr-plugin-sdk";
 
 export interface HarvestConfig {
   captureLines: number;
-  captureSource: string;
+  captureSource: ReadSource;
   databasePath: string;
   herdrSessionKey: string | null;
   herdrSessionLabel: string | null;
 }
 
 const DEFAULT_CAPTURE_LINES = 400;
-const DEFAULT_CAPTURE_SOURCE = "recent-unwrapped";
-const VALID_CAPTURE_SOURCES = new Set(["visible", "recent", "recent-unwrapped", "detection"]);
+const DEFAULT_CAPTURE_SOURCE: ReadSource = "recent-unwrapped";
+const VALID_CAPTURE_SOURCES: ReadonlySet<string> = new Set<ReadSource>([
+  "visible",
+  "recent",
+  "recent-unwrapped",
+  "detection",
+]);
 
 export function loadConfig(env: Record<string, string | undefined>): {
   config: HarvestConfig;
@@ -78,13 +84,21 @@ function parseHerdrSessionLabel(value: string | undefined): string | null {
   return "default";
 }
 
-function parseCaptureSource(value: string | undefined, warnings: string[]): string {
-  if (value === undefined || VALID_CAPTURE_SOURCES.has(value)) {
-    return value ?? DEFAULT_CAPTURE_SOURCE;
+function parseCaptureSource(value: string | undefined, warnings: string[]): ReadSource {
+  if (value === undefined) {
+    return DEFAULT_CAPTURE_SOURCE;
+  }
+
+  if (isReadSource(value)) {
+    return value;
   }
 
   warnings.push(
     `HARVEST_CAPTURE_SOURCE must be one of visible, recent, recent-unwrapped, or detection; using ${DEFAULT_CAPTURE_SOURCE} instead (received ${JSON.stringify(value)}).`,
   );
   return DEFAULT_CAPTURE_SOURCE;
+}
+
+function isReadSource(value: string): value is ReadSource {
+  return VALID_CAPTURE_SOURCES.has(value);
 }

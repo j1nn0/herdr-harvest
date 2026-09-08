@@ -1,6 +1,6 @@
+import { createHerdrClient } from "@j1nn0/herdr-plugin-sdk";
 import type { HarvestConfig } from "../config/config.ts";
 import { loadConfig } from "../config/config.ts";
-import { createCliHerdrClient } from "../herdr/cli-client.ts";
 import { openDatabase } from "../persistence/database.ts";
 import type { ResultStore } from "../persistence/result-store.ts";
 import { SqliteResultStore } from "../persistence/result-store.ts";
@@ -28,7 +28,7 @@ export async function runCapture(
     const config: HarvestConfig = loaded.config;
     database = openDatabase(config.databasePath);
     store = new SqliteResultStore(database);
-    const client = createCliHerdrClient({ env });
+    const client = createHerdrClient({ env });
     const outcome = await captureCompletion(
       {
         client,

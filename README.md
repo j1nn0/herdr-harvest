@@ -35,6 +35,18 @@ This is a design choice, not a limitation to be fixed later by heuristics. Captu
 - Herdr **v0.8.2** or newer
 - **Node.js 24+** on `PATH` (Harvest runs TypeScript directly via Node's type stripping — there is no build step)
 
+## Built on the plugin SDK
+
+Harvest talks to Herdr through [`@j1nn0/herdr-plugin-sdk`](https://www.npmjs.com/package/@j1nn0/herdr-plugin-sdk), its only runtime dependency besides Ink and React.
+
+There are three layers, and it is worth keeping them apart:
+
+- **Herdr Plugin v1** is the official API: a command-based contract of manifest entrypoints, environment variables, and CLI commands.
+- **`@j1nn0/herdr-plugin-sdk`** is an unofficial typed TypeScript convenience layer over that contract — event and context parsing, a typed CLI client, structured errors, and test helpers.
+- **Harvest** is an application built on that layer.
+
+So Harvest no longer ships its own Herdr subprocess handling or protocol parsing. What it still owns is everything specific to Harvest: what `done` means, capture policy, the agent-first/pane-fallback and read-fallback rules, deduplication, storage, clipboard, and the inbox.
+
 ## Installation
 
 ```bash
@@ -180,13 +192,16 @@ The capture pipeline is a straight line, and each stage is replaceable in isolat
 
 ```
 Herdr `pane.agent_status_changed`
-  → src/bin/hook.ts          process adapter; never crashes Herdr
-  → src/events/decode.ts     decode + filter to agent_status == "done"
+  → src/bin/hook.ts             process adapter; never crashes Herdr
+        └─ SDK readPluginEvent  validate the envelope (throws on a broken payload)
+  → src/capture/completion.ts   Harvest policy: is this a completion we capture?
   → src/capture/orchestrator.ts
-        ├─ src/herdr/        agent get → metadata; agent read → text (pane read fallback)
-        └─ src/persistence/  hash, dedup, insert in one transaction
+        ├─ src/herdr/           project SDK agent/pane payloads into capture metadata
+        └─ src/persistence/     hash, dedup, insert in one transaction
   → SQLite
 ```
+
+The split at the top is deliberate. The SDK answers *"is this a valid `pane.agent_status_changed` event?"*; Harvest answers *"is this a completion Harvest wants to capture?"* — and only `agent_status == "done"` is.
 
 and the read path is separate:
 
@@ -201,7 +216,7 @@ Two boundaries are enforced deliberately:
 - **The capture pipeline never imports Ink or React.** Capture works headlessly and is fully testable without a UI.
 - **The TUI never imports SQLite or the Herdr client.** It talks only to `InboxPort`, so the entire inbox can be tested against a fake port, and storage or clipboard strategies can change without touching presentation.
 
-The `HerdrClient` interface is the only place that knows Herdr exists, which is what lets the whole test suite run with **no Herdr server**.
+The SDK's `HerdrClient` is the only thing that spawns Herdr, which is what lets the whole test suite run with **no Herdr server** — tests drive `createMockHerdrClient()` from `@j1nn0/herdr-plugin-sdk/testing` instead.
 
 ### Deduplication
 

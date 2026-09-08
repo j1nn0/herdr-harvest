@@ -1,23 +1,36 @@
+import { HerdrEnvError, readPluginEvent } from "@j1nn0/herdr-plugin-sdk";
+import { decideCompletion } from "../capture/completion.ts";
 import type { CaptureOutcome } from "../capture/orchestrator.ts";
 import { runCapture } from "../capture/runner.ts";
-import { decodeAgentStatusEvent } from "../events/decode.ts";
 
 export async function runHook(): Promise<number> {
-  const event = decodeAgentStatusEvent(process.env.HERDR_PLUGIN_EVENT_JSON);
-  if (event.kind === "ignored") {
-    return 0;
+  let event: ReturnType<typeof readPluginEvent>;
+  try {
+    event = readPluginEvent(process.env);
+  } catch (error) {
+    if (error instanceof HerdrEnvError) {
+      process.stderr.write(`${error.message}\n`);
+      return 0;
+    }
+    throw error;
   }
-  if (event.kind === "malformed") {
-    process.stderr.write(`${event.reason}\n`);
+
+  if (event === null) {
+    process.stderr.write("missing HERDR_PLUGIN_EVENT_JSON\n");
     return 0;
   }
 
-  const { outcome, warnings } = await runCapture(event.paneId, process.env, {
-    workspaceIdHint: event.workspaceId,
-    agentKindHint: event.agentKind,
+  const decision = decideCompletion(event);
+  if (decision.kind === "ignored") {
+    return 0;
+  }
+
+  const { outcome, warnings } = await runCapture(decision.paneId, process.env, {
+    workspaceIdHint: decision.workspaceId,
+    agentKindHint: decision.agentKind,
   });
   writeWarnings(warnings);
-  writeSummary(event.paneId, outcome);
+  writeSummary(decision.paneId, outcome);
   return outcome.status === "failed" ? 1 : 0;
 }
 

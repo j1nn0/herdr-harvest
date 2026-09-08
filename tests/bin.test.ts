@@ -62,7 +62,7 @@ describe("hook entrypoint", () => {
 
       assert.equal(result.exitCode, 0);
       assert.equal(result.stdout, "");
-      assert.match(result.stderr, /not valid JSON/);
+      assert.match(result.stderr, /must contain valid JSON/);
     } finally {
       fixture.cleanup();
     }
@@ -97,6 +97,58 @@ describe("hook entrypoint", () => {
       assert.equal(result.exitCode, 1);
       assert.equal(summary(result.stdout).status, "failed");
       assert.equal(readRows(fixture.stateDirectory).length, 0);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+});
+
+describe("capture entrypoint", () => {
+  test("resolves the pane id from plugin context before HERDR_PANE_ID", async () => {
+    const fixture = makeFixture();
+
+    try {
+      const result = await runCaptureEntrypoint({
+        ...fixture.env,
+        HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({ focused_pane_id: "w1G:p1" }),
+        HERDR_PANE_ID: "w1G:p2",
+      });
+
+      assert.equal(result.exitCode, 0);
+      assert.equal(summary(result.stdout).paneId, "w1G:p1");
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test("falls back to HERDR_PANE_ID when plugin context is unavailable", async () => {
+    const fixture = makeFixture();
+
+    try {
+      const env: NodeJS.ProcessEnv = { ...fixture.env, HERDR_PANE_ID: "w1G:p1" };
+      delete env.HERDR_PLUGIN_CONTEXT_JSON;
+      const result = await runCaptureEntrypoint(env);
+
+      assert.equal(result.exitCode, 0);
+      assert.equal(summary(result.stdout).paneId, "w1G:p1");
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test("returns the usage error when no pane id is available", async () => {
+    const fixture = makeFixture();
+
+    try {
+      const env = { ...fixture.env };
+      delete env.HERDR_PLUGIN_CONTEXT_JSON;
+      delete env.HERDR_PANE_ID;
+      const result = await runCaptureEntrypoint(env);
+
+      assert.equal(result.exitCode, 2);
+      assert.equal(result.stdout, "");
+      assert.match(result.stderr, /No pane id was provided/);
+      assert.match(result.stderr, /Usage: node src\/bin\/capture\.ts/);
     } finally {
       fixture.cleanup();
     }
@@ -149,6 +201,55 @@ async function runHook(env: NodeJS.ProcessEnv): Promise<HookRun> {
   }
 }
 
+async function runCaptureEntrypoint(env: NodeJS.ProcessEnv): Promise<HookRun> {
+  try {
+    const result = await execFileAsync(process.execPath, ["src/bin/capture.ts"], {
+      cwd: REPOSITORY_ROOT,
+      encoding: "utf8",
+      env,
+    });
+    return {
+      exitCode: 0,
+      stdout: String(result.stdout),
+      stderr: String(result.stderr),
+    };
+  } catch (error) {
+    return {
+      exitCode: processExitCode(error),
+      stdout: processOutput(error, "stdout"),
+      stderr: processOutput(error, "stderr"),
+    };
+  }
+}
+
+function processExitCode(error: unknown): number {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    typeof error.code === "number"
+  ) {
+    return error.code;
+  }
+  return 1;
+}
+
+function processOutput(error: unknown, field: "stdout" | "stderr"): string {
+  if (typeof error !== "object" || error === null) {
+    return "";
+  }
+
+  const value =
+    field === "stdout"
+      ? "stdout" in error
+        ? error.stdout
+        : undefined
+      : "stderr" in error
+        ? error.stderr
+        : undefined;
+  return typeof value === "string" ? value : String(value ?? "");
+}
+
 function makeFixture(): Fixture {
   const stateDirectory = mkdtempSync(join(tmpdir(), "herdr-harvest-hook-"));
   const stubPath = join(stateDirectory, "herdr-stub.cjs");
@@ -164,6 +265,7 @@ function makeFixture(): Fixture {
       HARVEST_CAPTURE_LINES: "120",
       HARVEST_CAPTURE_SOURCE: "detection",
       HERDR_BIN_PATH: stubPath,
+      HERDR_PLUGIN_EVENT: "pane.agent_status_changed",
     },
     cleanup: () => rmSync(stateDirectory, { recursive: true, force: true }),
   };
@@ -188,7 +290,7 @@ function doneEvent(): string {
 
 function eventWithStatus(status: string): string {
   return JSON.stringify({
-    event: "pane.agent_status_changed",
+    event: "pane_agent_status_changed",
     data: {
       type: "pane_agent_status_changed",
       pane_id: "w1G:p1",
@@ -213,8 +315,11 @@ if (scope === "agent" && command === "get") {
     result: {
       agent: {
         agent: "claude",
+        terminal_id: "term-1",
+        focused: false,
         agent_session: { kind: "id", value: "stub-session" },
         agent_status: "done",
+        revision: 1,
         name: "worker",
         pane_id: "w1G:p1",
         tab_id: "w1G:t1",
@@ -230,7 +335,10 @@ if (scope === "agent" && command === "get") {
     result: {
       pane: {
         agent: "claude",
+        terminal_id: "term-1",
+        focused: false,
         agent_status: "done",
+        revision: 1,
         pane_id: "w1G:p1",
         tab_id: "w1G:t1",
         terminal_title_stripped: "stub pane",
@@ -241,13 +349,16 @@ if (scope === "agent" && command === "get") {
   });
 } else if ((scope === "agent" || scope === "pane") && command === "read") {
   if (process.env.STUB_FAIL_READ === "1") {
-    output({
-      error: {
-        code: scope === "agent" ? "agent_read_failed" : "pane_read_failed",
-        message: "stub read failed"
-      },
-      id: scope === "agent" ? "cli:agent:read" : "cli:pane:read"
-    });
+    process.stderr.write(
+      JSON.stringify({
+        error: {
+          code: scope === "agent" ? "agent_read_failed" : "pane_read_failed",
+          message: "stub read failed"
+        },
+        id: scope === "agent" ? "cli:agent:read" : "cli:pane:read"
+      }),
+    );
+    process.exitCode = 1;
   } else if (scope === "agent") {
     output("stub output\\n\\n世界 🚀  \\n");
   } else {
