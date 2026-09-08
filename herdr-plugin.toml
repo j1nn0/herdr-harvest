@@ -5,6 +5,18 @@ min_herdr_version = "0.8.2"
 description = "Harvest the results of your agent herd — capture agent output on done into a durable Result Inbox."
 platforms = ["linux", "macos", "windows"]
 
+# `herdr plugin install` clones this repository without `node_modules/`, so the
+# runtime dependencies have to be installed before Herdr registers the plugin.
+# Herdr runs build commands only for a GitHub install, after confirmation and
+# before registration, and aborts the install if one fails.
+#
+# `npm ci` rather than `npm install` so the tree is reproduced exactly from
+# `package-lock.json`, and `--omit=dev` because only `ink` and `react` are needed
+# at runtime. There is no compile step: Node 24 runs the TypeScript sources
+# directly via type stripping.
+[[build]]
+command = ["npm", "ci", "--omit=dev"]
+
 # Fires on every pane agent status transition. The hook itself filters for
 # `agent_status == "done"` and exits immediately otherwise.
 [[events]]
