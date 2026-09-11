@@ -126,10 +126,32 @@ The inbox opens as a Herdr overlay, listing unread results first and newest firs
 ```
 Harvest Result Inbox · 3 results
 Unread results stay at the top; select one to inspect it.
-● smoketest   herdr-harvest / π - herdr-harvest   ago 1m   2+2 equals 4.
-  claude      api / server                        ago 12m  All 47 tests pass…
+● claude    4fe228   herdr-harvest     ago 1m   2+2 equals 4.
+● claude    751178   herdr-harvest     ago 8m   Added the adoption note to the…
+  explorer  c76a0f   herdr-plugin-sdk  ago 12m  All 47 tests pass…
+Herdr: default
+Pane: π - herdr-harvest
 ↑/↓ or k/j move · Enter open · y copy · a archive · q/Esc quit
 ```
+
+The six characters after the agent are the **agent session** — the thing that tells
+two otherwise identical rows apart. The first two rows above are the same agent in
+the same workspace, but different Claude sessions.
+
+It is derived from the native session Herdr already reports, for display only: the
+start of the session id where the agent has one, and a stable hash otherwise, so a
+session file path never ends up in the row. A session Herdr never reported shows as
+`~` plus a hash of the pane it came from, so unknown sessions stay distinct from one
+another instead of merging.
+
+The Herdr session and the pane's terminal title sit under the list, for the selected
+result only. Terminal titles often carry quota, context size, and branch text, which
+says nothing about which result you are looking at, so they no longer compete for row
+space.
+
+Rows adapt to the pane width. As it narrows, the preview goes first, then the age,
+then the workspace; the agent and its session id are the last things to go, and the
+metadata lines disappear once there is no room for them.
 
 **Inbox**
 
