@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Improved Result Inbox rows to identify the originating agent session, prioritize useful identity metadata, and adapt cleanly to narrow panes.
+
 ## [0.1.0] - 2026-09-11
 
 First public release.

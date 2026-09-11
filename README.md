@@ -140,9 +140,9 @@ the same workspace, but different Claude sessions.
 
 It is derived from the native session Herdr already reports, for display only: the
 start of the session id where the agent has one, and a stable hash otherwise, so a
-session file path never ends up in the row. A session Herdr never reported shows as
-`~` plus a hash of the pane it came from, so unknown sessions stay distinct from one
-another instead of merging.
+session file path never ends up in the row. When Herdr does not report a native agent session, the label starts with `~` and
+uses a stable hash derived from the source pane context, so different panes normally remain distinguishable. The `~` marks it as a
+fallback rather than a native session id.
 
 The Herdr session and the pane's terminal title sit under the list, for the selected
 result only. Terminal titles often carry quota, context size, and branch text, which
