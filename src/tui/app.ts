@@ -22,6 +22,9 @@ export function createApp(port: InboxPort): FC {
     const [scrollOffset, setScrollOffset] = useState(0);
     const [status, setStatus] = useState<StatusMessage | null>(null);
     const viewport = resultViewportLines(stdout.rows);
+    const columns = stdout.columns;
+    const inboxWidth =
+      columns !== undefined && Number.isFinite(columns) ? Math.max(0, Math.floor(columns)) : 80;
 
     useEffect(() => {
       if (status === null) {
@@ -194,6 +197,7 @@ export function createApp(port: InboxPort): FC {
     return h(InboxView, {
       items,
       cursor,
+      width: inboxWidth,
       status,
       onOpen: openSelected,
       onCopy: () => {

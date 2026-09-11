@@ -94,7 +94,10 @@ describe("inbox service", () => {
 
       const [item] = service.list();
       assert.equal(item?.agentLabel, "Named agent");
-      assert.equal(item?.contextLabel, "Named workspace / Named pane");
+      assert.equal(item?.workspaceLabel, "Named workspace");
+      assert.equal(item?.paneLabel, "Named pane");
+      assert.equal(item?.herdrSessionLabel, "default");
+      assert.equal(item?.sessionShortId, "sessio");
     } finally {
       store.close();
     }
@@ -117,7 +120,8 @@ describe("inbox service", () => {
 
       const [item] = service.list();
       assert.equal(item?.agentLabel, "shell");
-      assert.equal(item?.contextLabel, "workspace-fallback / pane-fallback");
+      assert.equal(item?.workspaceLabel, "workspace-fallback");
+      assert.equal(item?.paneLabel, "pane-fallback");
     } finally {
       store.close();
     }
@@ -140,24 +144,25 @@ describe("inbox service", () => {
 
       const [item] = service.list();
       assert.equal(item?.agentLabel, "unknown agent");
-      assert.equal(item?.contextLabel, "- / pane-only");
+      assert.equal(item?.workspaceLabel, "-");
+      assert.equal(item?.paneLabel, "pane-only");
     } finally {
       store.close();
     }
   });
 
-  test("keeps context labels unprefixed for one Herdr session", () => {
+  test("keeps Herdr session labels available for one Herdr session", () => {
     const { service, store } = makeService();
     try {
       const result = inserted(store, makeInput());
-      assert.equal(service.list()[0]?.contextLabel, "Workspace name / Pane name");
-      assert.equal(service.open(result.id)?.contextLabel, "Workspace name / Pane name");
+      assert.equal(service.list()[0]?.herdrSessionLabel, "default");
+      assert.equal(service.open(result.id)?.herdrSessionLabel, "default");
     } finally {
       store.close();
     }
   });
 
-  test("prefixes list and detail context labels when sessions differ", () => {
+  test("keeps discrete Herdr and workspace fields when sessions differ", () => {
     const { service, store } = makeService();
     try {
       const first = inserted(
@@ -178,25 +183,16 @@ describe("inbox service", () => {
       );
 
       const items = service.list();
-      assert.equal(
-        items.find((item) => item.id === first.id)?.contextLabel,
-        "alpha · Workspace name / Pane name",
-      );
-      assert.equal(
-        items.find((item) => item.id === second.id)?.contextLabel,
-        "beta · Workspace name / Pane name",
-      );
-      assert.equal(service.open(first.id)?.contextLabel, "alpha · Workspace name / Pane name");
-      assert.equal(
-        service.list().find((item) => item.id === first.id)?.contextLabel,
-        "alpha · Workspace name / Pane name",
-      );
+      assert.equal(items.find((item) => item.id === first.id)?.herdrSessionLabel, "alpha");
+      assert.equal(items.find((item) => item.id === second.id)?.herdrSessionLabel, "beta");
+      assert.equal(items.find((item) => item.id === first.id)?.workspaceLabel, "Workspace name");
+      assert.equal(service.open(first.id)?.herdrSessionLabel, "alpha");
     } finally {
       store.close();
     }
   });
 
-  test("displays unknown session for a null Herdr session key", () => {
+  test("keeps null Herdr session metadata separate from native session identity", () => {
     const { service, store } = makeService();
     try {
       const unknown = inserted(
@@ -204,6 +200,8 @@ describe("inbox service", () => {
         makeInput({
           herdrSessionKey: null,
           herdrSessionLabel: null,
+          agentSessionKind: null,
+          agentSessionValue: null,
           rawText: "unknown session output",
         }),
       );
@@ -216,13 +214,11 @@ describe("inbox service", () => {
         }),
       );
 
-      assert.equal(
-        service.list().find((item) => item.id === unknown.id)?.contextLabel,
-        "unknown session · Workspace name / Pane name",
-      );
-      assert.equal(
-        service.open(unknown.id)?.contextLabel,
-        "unknown session · Workspace name / Pane name",
+      assert.equal(service.list().find((item) => item.id === unknown.id)?.herdrSessionLabel, null);
+      assert.equal(service.open(unknown.id)?.herdrSessionLabel, null);
+      assert.match(
+        service.list().find((item) => item.id === unknown.id)?.sessionShortId ?? "",
+        /^~/,
       );
     } finally {
       store.close();
@@ -246,6 +242,19 @@ describe("inbox service", () => {
       assert.equal(detail?.unread, false);
       assert.equal(service.list()[0]?.unread, false);
       assert.equal(store.get(result.id)?.readAtMs, 9_000);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("derives the preview from raw text without changing the stored content", () => {
+    const { service, store } = makeService();
+    try {
+      const rawText = " leading\n\nBun から Node への移行 世界 🚀  ";
+      const result = inserted(store, makeInput({ rawText }));
+
+      assert.equal(service.list()[0]?.preview, "leading Bun から Node への移行 世界 🚀");
+      assert.equal(store.get(result.id)?.rawText, rawText);
     } finally {
       store.close();
     }

@@ -38,7 +38,7 @@ export const ResultView: FC<ResultViewProps> = ({ detail, scrollOffset, status =
     h(
       Text,
       { dimColor: true },
-      `${detail.contextLabel} · pane ${detail.paneId} · ${detail.captureSource}`,
+      `Herdr: ${detail.herdrSessionLabel ?? "unknown session"} · session ${detail.sessionShortId} · workspace ${detail.workspaceLabel} · pane ${detail.paneLabel} · ${detail.captureSource}`,
     ),
     h(Text, { dimColor: true }, `line ${start + 1}-${end} of ${lines.length}`),
     h(Box, { flexDirection: "column" }, visibleLines),

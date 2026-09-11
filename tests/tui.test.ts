@@ -6,6 +6,7 @@ import type { InboxDetail, InboxItem, InboxPort } from "../src/app/inbox-service
 import type { CopyReport } from "../src/clipboard/provider.ts";
 import { ClipboardError } from "../src/clipboard/provider.ts";
 import { createApp } from "../src/tui/app.ts";
+import { displayWidth, formatInboxRow, selectedMetadataLines } from "../src/tui/inbox-view.ts";
 
 const h = React.createElement;
 
@@ -27,7 +28,10 @@ function makeItem(id: string, unread = true): InboxItem {
   return {
     id,
     agentLabel: `agent-${id}`,
-    contextLabel: `workspace / pane-${id}`,
+    sessionShortId: `sess-${id}`,
+    workspaceLabel: "workspace",
+    herdrSessionLabel: "default",
+    paneLabel: `pane-${id}`,
     capturedAtMs: 0,
     preview: `preview-${id}`,
     unread,
@@ -74,6 +78,105 @@ function tick(): Promise<void> {
 }
 
 describe("inbox TUI", () => {
+  test("formats a distinguishable row without pane-title noise", () => {
+    const item = makeItem("wide");
+    const row = formatInboxRow(
+      {
+        ...item,
+        agentLabel: "claude",
+        sessionShortId: "409d97",
+        workspaceLabel: "herdr-plugin-sdk",
+        paneLabel: "⠿ claude · working · 15m · transient title",
+        preview: "completed output preview",
+        capturedAtMs: 0,
+      },
+      120,
+      60_000,
+    );
+
+    assert.match(row, /claude/);
+    assert.match(row, /409d97/);
+    assert.match(row, /herdr-plugin-sdk/);
+    assert.match(row, /ago 1m/);
+    assert.doesNotMatch(row, /transient title/);
+    assert.ok(displayWidth(row) <= 120);
+  });
+
+  test("keeps the core identity fields at a narrow width", () => {
+    const row = formatInboxRow(
+      {
+        ...makeItem("narrow"),
+        agentLabel: "claude",
+        sessionShortId: "409d97",
+        workspaceLabel: "herdr-plugin-sdk",
+        preview: "long preview that should be dropped first",
+      },
+      20,
+      60_000,
+    );
+
+    assert.match(row, /claude/);
+    assert.match(row, /409d97/);
+    assert.ok(displayWidth(row) <= 20);
+  });
+
+  test("accounts for Japanese and emoji display width", () => {
+    const row = formatInboxRow(
+      {
+        ...makeItem("unicode"),
+        agentLabel: "pi",
+        sessionShortId: "a1b2c3",
+        workspaceLabel: "workspace",
+        preview: "Bun から Node への移行 世界 🚀",
+      },
+      32,
+      60_000,
+    );
+
+    assert.ok(displayWidth(row) <= 32);
+  });
+
+  test("truncates an over-long field while preserving the native session", () => {
+    const row = formatInboxRow(
+      {
+        ...makeItem("long-agent"),
+        agentLabel: "an agent label that is much longer than the available row",
+        sessionShortId: "409d97",
+      },
+      40,
+      60_000,
+    );
+
+    assert.match(row, /…/);
+    assert.match(row, /409d97/);
+    assert.ok(displayWidth(row) <= 40);
+  });
+
+  test("handles tiny and non-finite row widths", () => {
+    const item = makeItem("tiny");
+    assert.equal(displayWidth(formatInboxRow(item, 0, 60_000)), 0);
+    assert.ok(displayWidth(formatInboxRow(item, 1, 60_000)) <= 1);
+    assert.ok(displayWidth(formatInboxRow(item, Number.NaN, 60_000)) <= 80);
+    assert.ok(displayWidth(formatInboxRow(item, Number.POSITIVE_INFINITY, 60_000)) <= 80);
+  });
+
+  test("formats selected metadata on two truncated lines only when it fits", () => {
+    const item = makeItem("metadata");
+    const lines = selectedMetadataLines(
+      {
+        ...item,
+        herdrSessionLabel: "default",
+        paneLabel: "a very long transient pane title",
+      },
+      28,
+    );
+
+    assert.equal(lines.length, 2);
+    assert.match(lines[0] ?? "", /Herdr: default/);
+    assert.ok(lines.every((line) => displayWidth(line) <= 28));
+    assert.deepEqual(selectedMetadataLines(item, 23), []);
+  });
+
   test("renders one row per result with an unread indicator", () => {
     const fixture = makeFixture([makeItem("one", true), makeItem("two", false)]);
     const instance = render(h(createApp(fixture.port)));
@@ -81,7 +184,7 @@ describe("inbox TUI", () => {
       const frame = instance.lastFrame() ?? "";
       assert.match(frame, /agent-one/);
       assert.match(frame, /agent-two/);
-      assert.match(frame, /● agent-one/);
+      assert.match(frame, /●\s+agent-one/);
     } finally {
       instance.unmount();
     }

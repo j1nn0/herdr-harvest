@@ -3,11 +3,15 @@ import { ClipboardError } from "../clipboard/provider.ts";
 import type { HarvestResult } from "../domain/result.ts";
 import { preview as makePreview } from "../domain/result.ts";
 import type { ResultStore } from "../persistence/result-store.ts";
+import { sessionShortId } from "./session-label.ts";
 
 export interface InboxItem {
   id: string;
   agentLabel: string;
-  contextLabel: string;
+  sessionShortId: string;
+  workspaceLabel: string;
+  herdrSessionLabel: string | null;
+  paneLabel: string;
   capturedAtMs: number;
   preview: string;
   unread: boolean;
@@ -34,10 +38,7 @@ export function createInboxService(deps: {
   now: () => number;
 }): InboxPort {
   return {
-    list: () => {
-      const includeSession = hasMultipleHerdrSessions(deps.store);
-      return deps.store.list().map((result) => toItem(result, includeSession));
-    },
+    list: () => deps.store.list().map(toItem),
     open: (id) => openResult(deps.store, id, deps.now),
     archive: (id) => archiveResult(deps.store, id, deps.now),
     copy: (id) => copyResult(deps.store, deps.clipboard, id),
@@ -51,7 +52,7 @@ function openResult(store: ResultStore, id: string, now: () => number): InboxDet
   }
 
   const markedRead = store.markRead(id, now());
-  return toDetail(markedRead ?? result, hasMultipleHerdrSessions(store));
+  return toDetail(markedRead ?? result);
 }
 
 function archiveResult(store: ResultStore, id: string, now: () => number): boolean {
@@ -76,11 +77,14 @@ function copyResult(
   return clipboard.copy(result.rawText);
 }
 
-function toItem(result: HarvestResult, includeSession: boolean): InboxItem {
+function toItem(result: HarvestResult): InboxItem {
   return {
     id: result.id,
     agentLabel: result.agentName ?? result.agentKind ?? "unknown agent",
-    contextLabel: contextLabel(result, includeSession),
+    sessionShortId: sessionShortId(result),
+    workspaceLabel: result.workspaceName ?? result.workspaceId ?? "-",
+    herdrSessionLabel: result.herdrSessionLabel ?? result.herdrSessionKey ?? null,
+    paneLabel: result.paneName ?? result.paneId,
     capturedAtMs: result.capturedAtMs,
     preview: makePreview(result.rawText),
     unread: result.readAtMs === null,
@@ -88,27 +92,12 @@ function toItem(result: HarvestResult, includeSession: boolean): InboxItem {
   };
 }
 
-function toDetail(result: HarvestResult, includeSession: boolean): InboxDetail {
+function toDetail(result: HarvestResult): InboxDetail {
   return {
-    ...toItem(result, includeSession),
+    ...toItem(result),
     rawText: result.rawText,
     captureSource: result.captureSource,
     captureLineCount: result.captureLineCount,
     paneId: result.paneId,
   };
-}
-
-function contextLabel(result: HarvestResult, includeSession: boolean): string {
-  const workspace = result.workspaceName ?? result.workspaceId ?? "-";
-  const pane = result.paneName ?? result.paneId;
-  const context = `${workspace} / ${pane}`;
-  return includeSession ? `${sessionDisplay(result)} · ${context}` : context;
-}
-
-function sessionDisplay(result: HarvestResult): string {
-  return result.herdrSessionLabel ?? result.herdrSessionKey ?? "unknown session";
-}
-
-function hasMultipleHerdrSessions(store: ResultStore): boolean {
-  return store.distinctHerdrSessionKeys().length > 1;
 }
