@@ -93,6 +93,23 @@ function hasAgent(frame: string, id: string): boolean {
   return frame.split("\n").some((line) => line.includes(`agent-${id} `));
 }
 
+function setTerminalSize(instance: ReturnType<typeof render>, columns: number, rows: number): void {
+  Object.defineProperty(instance.stdout, "columns", {
+    configurable: true,
+    value: columns,
+    writable: true,
+  });
+  Object.defineProperty(instance.stdout, "rows", {
+    configurable: true,
+    value: rows,
+    writable: true,
+  });
+}
+
+function agentRows(frame: string): string[] {
+  return frame.split("\n").filter((line) => line.includes("agent-"));
+}
+
 describe("inbox TUI", () => {
   test("formats a distinguishable row without pane-title noise", () => {
     const item = makeItem("wide");
@@ -313,6 +330,83 @@ describe("inbox TUI", () => {
       assert.equal(hasAgent(frame, "inbox-29"), false);
       assert.equal(hasAgent(frame, "inbox-28"), true);
       assert.match(frame, /Archived result inbox-29/);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("truncates inbox chrome to one physical row at narrow terminal widths", async () => {
+    const items = Array.from({ length: 30 }, (_, index) =>
+      makeItem(`narrow-${String(index).padStart(2, "0")}`),
+    );
+    const fixture = makeFixture(items);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      setTerminalSize(instance, 80, 24);
+      await sendInput(instance, "j");
+      let frame = instance.lastFrame() ?? "";
+      assert.ok(frame.split("\n").length <= 24);
+      assert.equal(frame.split("\n").filter((line) => line.includes("↑/↓ or k/j move")).length, 1);
+      assert.equal(agentRows(frame).length, 19);
+      assert.equal(
+        frame.split("\n").filter((line) => /^(?:Herdr:|Pane:)/.test(line.trim())).length,
+        2,
+      );
+
+      await sendInput(instance, "y");
+      frame = instance.lastFrame() ?? "";
+      assert.equal(agentRows(frame).length, 18);
+
+      setTerminalSize(instance, 40, 20);
+      await sendInput(instance, "j");
+      frame = instance.lastFrame() ?? "";
+      assert.ok(frame.split("\n").length <= 20);
+      assert.equal(agentRows(frame).length, 14);
+      assert.equal(frame.split("\n").filter((line) => line.includes("↑/↓ or k/j move")).length, 1);
+      assert.equal(
+        frame.split("\n").filter((line) => /^(?:Herdr:|Pane:)/.test(line.trim())).length,
+        2,
+      );
+
+      await sendInput(instance, "\u001b[6~");
+      frame = instance.lastFrame() ?? "";
+      assert.ok(frame.split("\n").length <= 20);
+      assert.equal(hasAgent(frame, "narrow-16"), true);
+      for (let index = 0; index < 4; index += 1) {
+        await sendInput(instance, "\u001b[6~");
+      }
+      frame = instance.lastFrame() ?? "";
+      assert.ok(frame.split("\n").length <= 20);
+      assert.equal(hasAgent(frame, "narrow-29"), true);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("truncates result chrome to one physical row at a narrow terminal width", async () => {
+    const item = makeItem("result-narrow");
+    const rawText = Array.from(
+      { length: 30 },
+      (_, index) => `result-line-${String(index).padStart(2, "0")}`,
+    ).join("\n");
+    const fixture = makeFixture([item], {
+      details: new Map([[item.id, makeDetail(item, rawText)]]),
+    });
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      setTerminalSize(instance, 40, 20);
+      await sendInput(instance, "\r");
+      const frame = instance.lastFrame() ?? "";
+      assert.ok(frame.split("\n").length <= 20);
+      assert.equal(
+        frame.split("\n").filter((line) => line.includes("↑/↓ or k/j scroll")).length,
+        1,
+      );
+      assert.equal(frame.split("\n").filter((line) => /^Herdr:/.test(line.trim())).length, 1);
+      assert.equal(
+        frame.split("\n").filter((line) => /^line 1-15 of 30/.test(line.trim())).length,
+        1,
+      );
     } finally {
       instance.unmount();
     }

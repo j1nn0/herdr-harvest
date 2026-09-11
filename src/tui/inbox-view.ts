@@ -32,6 +32,7 @@ const NO_SEPARATOR = "";
 const ELLIPSIS = "…";
 
 const DEFAULT_INBOX_ROWS = 24;
+/** Chrome Text nodes use wrap="truncate" so each fixed line stays one physical row. */
 const INBOX_FIXED_CHROME_LINES = 3;
 interface RowField {
   value: string;
@@ -103,7 +104,7 @@ export const InboxView: FC<InboxViewProps> = ({
           Box,
           { flexDirection: "column" },
           metadataLines.map((line, index) =>
-            h(Text, { key: `metadata-${index}`, dimColor: true }, line),
+            h(Text, { key: `metadata-${index}`, dimColor: true, wrap: "truncate" }, line),
           ),
         );
 
@@ -112,18 +113,26 @@ export const InboxView: FC<InboxViewProps> = ({
     { flexDirection: "column", paddingX: 1 },
     h(
       Text,
-      { bold: true },
+      { bold: true, wrap: "truncate" },
       `Harvest Result Inbox · ${items.length} result${items.length === 1 ? "" : "s"}`,
     ),
-    h(Text, { dimColor: true }, "Unread results stay at the top; select one to inspect it."),
+    h(
+      Text,
+      { dimColor: true, wrap: "truncate" },
+      "Unread results stay at the top; select one to inspect it.",
+    ),
     items.length > 0
       ? rows
-      : h(Text, { dimColor: true }, "No results yet. Captured agent output will appear here."),
+      : h(
+          Text,
+          { dimColor: true, wrap: "truncate" },
+          "No results yet. Captured agent output will appear here.",
+        ),
     metadata,
     statusElement(status),
     h(
       Text,
-      { dimColor: true },
+      { dimColor: true, wrap: "truncate" },
       "↑/↓ or k/j move · PageUp/PageDown page · Enter open · y copy · a archive · q/Esc quit",
     ),
   );
@@ -371,7 +380,7 @@ function statusElement(status: StatusMessage | null): React.ReactElement | null 
   if (status === null) {
     return null;
   }
-  return h(Text, { color: status.error ? "red" : "green" }, status.text);
+  return h(Text, { color: status.error ? "red" : "green", wrap: "truncate" }, status.text);
 }
 
 export default InboxView;
