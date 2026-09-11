@@ -29,7 +29,11 @@ export const ResultView: FC<ResultViewProps> = ({ detail, scrollOffset, status =
   const visibleLines = lines
     .slice(start, end)
     .map((line, index) =>
-      h(Text, { key: `${start + index}-${line}` }, line.length === 0 ? " " : line),
+      h(
+        Text,
+        { key: `${start + index}-${line}`, wrap: "truncate" },
+        line.length === 0 ? " " : line,
+      ),
     );
 
   return h(

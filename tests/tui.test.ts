@@ -110,6 +110,10 @@ function agentRows(frame: string): string[] {
   return frame.split("\n").filter((line) => line.includes("agent-"));
 }
 
+function resultBodyRows(frame: string): string[] {
+  return frame.split("\n").filter((line) => line.includes("body-line-"));
+}
+
 describe("inbox TUI", () => {
   test("formats a distinguishable row without pane-title noise", () => {
     const item = makeItem("wide");
@@ -530,6 +534,93 @@ describe("inbox TUI", () => {
       assert.match(instance.lastFrame() ?? "", /line 31-50 of 50/);
       await sendInput(instance, "\u001b[A");
       assert.match(instance.lastFrame() ?? "", /line 30-49 of 50/);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("keeps long Result body lines to one row while paging by the logical viewport", async () => {
+    const item = makeItem("long-body");
+    const rawLines = Array.from(
+      { length: 40 },
+      (_, index) =>
+        `body-line-${String(index).padStart(2, "0")} /workspace/${"nested/".repeat(12)}日本語🚀`,
+    );
+    const rawText = rawLines.join("\n");
+    const details = new Map([[item.id, makeDetail(item, rawText)]]);
+    const fixture = makeFixture([item], {
+      details,
+      copy: async (id) => {
+        assert.equal(details.get(id)?.rawText, rawText);
+        return { provider: "fake", confirmed: true };
+      },
+    });
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      setTerminalSize(instance, 40, 20);
+      await sendInput(instance, "\r");
+      let frame = instance.lastFrame() ?? "";
+      assert.ok(frame.split("\n").length <= 20);
+      assert.equal(resultBodyRows(frame).length, 15);
+      assert.match(frame, /line 1-15 of 40/);
+      assert.equal(
+        frame.split("\n").filter((line) => line.includes("↑/↓ or k/j scroll")).length,
+        1,
+      );
+      assert.equal(frame.split("\n").filter((line) => /^Herdr:/.test(line.trim())).length, 1);
+
+      await sendInput(instance, "\u001b[6~");
+      frame = instance.lastFrame() ?? "";
+      assert.match(frame, /line 16-30 of 40/);
+      assert.equal(resultBodyRows(frame).length, 15);
+      assert.equal(frame.includes("body-line-15"), true);
+      assert.equal(frame.includes("body-line-00"), false);
+
+      await sendInput(instance, "\u001b[5~");
+      assert.match(instance.lastFrame() ?? "", /line 1-15 of 40/);
+      await sendInput(instance, "\u001b[B");
+      assert.match(instance.lastFrame() ?? "", /line 2-16 of 40/);
+      await sendInput(instance, "\u001b[A");
+      assert.match(instance.lastFrame() ?? "", /line 1-15 of 40/);
+
+      await sendInput(instance, "\u001b[6~");
+      await sendInput(instance, "\u001b[6~");
+      frame = instance.lastFrame() ?? "";
+      assert.match(frame, /line 26-40 of 40/);
+      assert.equal(resultBodyRows(frame).length, 15);
+      await sendInput(instance, "\u001b[6~");
+      assert.match(instance.lastFrame() ?? "", /line 26-40 of 40/);
+      await sendInput(instance, "\u001b[5~");
+      assert.match(instance.lastFrame() ?? "", /line 11-25 of 40/);
+
+      await sendInput(instance, "y");
+      assert.deepEqual(fixture.calls.copied, [item.id]);
+      assert.equal(details.get(item.id)?.rawText, rawText);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("keeps an empty Result body line to one physical row", async () => {
+    const item = makeItem("empty-body");
+    const rawText = [
+      `body-line-00 ${"日本語🚀".repeat(20)}`,
+      "",
+      `body-line-02 ${"/very/long/path/".repeat(10)}`,
+      `body-line-03 ${"/very/long/path/".repeat(10)}`,
+      `body-line-04 ${"/very/long/path/".repeat(10)}`,
+    ].join("\n");
+    const fixture = makeFixture([item], {
+      details: new Map([[item.id, makeDetail(item, rawText)]]),
+    });
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      setTerminalSize(instance, 40, 10);
+      await sendInput(instance, "\r");
+      const frame = instance.lastFrame() ?? "";
+      assert.equal(frame.split("\n").length, 9);
+      assert.match(frame, /line 1-5 of 5/);
+      assert.equal(resultBodyRows(frame).length, 4);
     } finally {
       instance.unmount();
     }
