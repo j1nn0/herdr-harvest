@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-11
+
 ### Changed
 
 - Improved Result Inbox rows to identify the originating agent session, prioritize useful identity metadata, and adapt cleanly to narrow panes.
@@ -40,5 +42,6 @@ First public release.
 - A completion inferred only from `blocked → idle` is not captured, because that transition can equally mean an approval prompt was cancelled.
 - Archived results stay in the database but cannot yet be browsed or restored from the inbox.
 
-[Unreleased]: https://github.com/j1nn0/herdr-harvest/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/j1nn0/herdr-harvest/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/j1nn0/herdr-harvest/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/j1nn0/herdr-harvest/releases/tag/v0.1.0

@@ -1,6 +1,6 @@
 {
   "name": "herdr-harvest",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Harvest the results of your agent herd — a Herdr plugin that captures agent completion output into a durable Result Inbox.",
   "license": "MIT",
   "type": "module",
