@@ -3,7 +3,14 @@ import React, { type FC, useEffect, useState } from "react";
 import type { InboxDetail, InboxItem, InboxPort } from "../app/inbox-service.ts";
 import type { CopyReport } from "../clipboard/provider.ts";
 import { ClipboardError } from "../clipboard/provider.ts";
-import { InboxView, type StatusMessage } from "./inbox-view.ts";
+import {
+  clampListOffset,
+  InboxView,
+  inboxViewportLines,
+  listOffsetForCursor,
+  type StatusMessage,
+  selectedMetadataLines,
+} from "./inbox-view.ts";
 import { ResultView, resultViewportLines } from "./result-view.ts";
 
 const h = React.createElement;
@@ -20,11 +27,16 @@ export function createApp(port: InboxPort): FC {
     const [cursor, setCursor] = useState(0);
     const [detail, setDetail] = useState<InboxDetail | null>(null);
     const [scrollOffset, setScrollOffset] = useState(0);
+    const [listOffset, setListOffset] = useState(0);
     const [status, setStatus] = useState<StatusMessage | null>(null);
     const viewport = resultViewportLines(stdout.rows);
     const columns = stdout.columns;
     const inboxWidth =
       columns !== undefined && Number.isFinite(columns) ? Math.max(0, Math.floor(columns)) : 80;
+    const inboxContentWidth = Math.max(0, inboxWidth - 2);
+    const inboxMetadataLines = selectedMetadataLines(items[cursor], inboxContentWidth).length;
+    const inboxCapacity = inboxViewportLines(stdout.rows, inboxMetadataLines, status !== null);
+    const inboxPageStep = Math.max(1, inboxCapacity);
 
     useEffect(() => {
       if (status === null) {
@@ -35,10 +47,32 @@ export function createApp(port: InboxPort): FC {
       return () => clearTimeout(timeout);
     }, [status]);
 
-    const refreshItems = (): InboxItem[] => {
+    const setInboxPosition = (
+      nextCursor: number,
+      itemCount = items.length,
+      capacity = inboxCapacity,
+    ): void => {
+      const boundedCursor = clampCursor(nextCursor, itemCount);
+      setCursor(boundedCursor);
+      setListOffset((currentOffset) =>
+        clampListOffset(
+          listOffsetForCursor(boundedCursor, currentOffset, capacity),
+          itemCount,
+          capacity,
+        ),
+      );
+    };
+
+    const refreshItems = (hasStatus = status !== null): InboxItem[] => {
       const nextItems = port.list();
+      const nextCursor = clampCursor(cursor, nextItems.length);
+      const nextCapacity = inboxViewportLines(
+        stdout.rows,
+        selectedMetadataLines(nextItems[nextCursor], inboxContentWidth).length,
+        hasStatus,
+      );
       setItems(nextItems);
-      setCursor((current) => clampCursor(current, nextItems.length));
+      setInboxPosition(nextCursor, nextItems.length, nextCapacity);
       return nextItems;
     };
 
@@ -65,7 +99,7 @@ export function createApp(port: InboxPort): FC {
       try {
         const opened = port.open(item.id);
         if (opened === null) {
-          refreshItems();
+          refreshItems(true);
           setStatus({ text: `Result ${item.id} is no longer available.`, error: true });
           return;
         }
@@ -81,7 +115,7 @@ export function createApp(port: InboxPort): FC {
     const archive = (id: string, returnToInbox: boolean): void => {
       try {
         const applied = port.archive(id);
-        refreshItems();
+        refreshItems(true);
         if (returnToInbox) {
           setDetail(null);
           setView("inbox");
@@ -112,11 +146,19 @@ export function createApp(port: InboxPort): FC {
           return;
         }
         if (key.upArrow || input === "k") {
-          setCursor((current) => clampCursor(current - 1, items.length));
+          setInboxPosition(cursor - 1);
           return;
         }
         if (key.downArrow || input === "j") {
-          setCursor((current) => clampCursor(current + 1, items.length));
+          setInboxPosition(cursor + 1);
+          return;
+        }
+        if (key.pageUp) {
+          setInboxPosition(cursor - inboxPageStep);
+          return;
+        }
+        if (key.pageDown) {
+          setInboxPosition(cursor + inboxPageStep);
           return;
         }
         if (key.return || input === "\r") {
@@ -199,6 +241,8 @@ export function createApp(port: InboxPort): FC {
       cursor,
       width: inboxWidth,
       status,
+      offset: listOffset,
+      limit: inboxCapacity,
       onOpen: openSelected,
       onCopy: () => {
         const item = items[cursor];

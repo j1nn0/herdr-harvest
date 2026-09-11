@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Changed
 
 - Improved Result Inbox rows to identify the originating agent session, prioritize useful identity metadata, and adapt cleanly to narrow panes.
+- Added one-page PageUp/PageDown navigation to the Result Inbox.
 
 ## [0.1.0] - 2026-09-11
 

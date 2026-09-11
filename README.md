@@ -155,13 +155,14 @@ metadata lines disappear once there is no room for them.
 
 **Inbox**
 
-| Key            | Action                          |
-| -------------- | ------------------------------- |
-| `↑`/`↓`, `k`/`j` | Move the selection            |
-| `Enter`        | Open the result (marks it read) |
-| `y`            | Copy the result                 |
-| `a`            | Archive the result              |
-| `q` / `Esc`    | Close the inbox                 |
+| Key                     | Action                          |
+| ----------------------- | ------------------------------- |
+| `↑` / `↓`, `k` / `j`    | Move one result                 |
+| `PageUp` / `PageDown`   | Move one page                   |
+| `Enter`                 | Open the result (marks it read) |
+| `y`                     | Copy the result                 |
+| `a`                     | Archive the result              |
+| `q` / `Esc`             | Close the inbox                 |
 
 **Result view**
 

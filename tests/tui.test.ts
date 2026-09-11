@@ -6,7 +6,14 @@ import type { InboxDetail, InboxItem, InboxPort } from "../src/app/inbox-service
 import type { CopyReport } from "../src/clipboard/provider.ts";
 import { ClipboardError } from "../src/clipboard/provider.ts";
 import { createApp } from "../src/tui/app.ts";
-import { displayWidth, formatInboxRow, selectedMetadataLines } from "../src/tui/inbox-view.ts";
+import {
+  clampListOffset,
+  displayWidth,
+  formatInboxRow,
+  inboxViewportLines,
+  listOffsetForCursor,
+  selectedMetadataLines,
+} from "../src/tui/inbox-view.ts";
 
 const h = React.createElement;
 
@@ -75,6 +82,15 @@ function makeFixture(items: InboxItem[], options: FixtureOptions = {}): Fixture 
 
 function tick(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 20));
+}
+
+async function sendInput(instance: ReturnType<typeof render>, input: string): Promise<void> {
+  instance.stdin.write(input);
+  await tick();
+}
+
+function hasAgent(frame: string, id: string): boolean {
+  return frame.split("\n").some((line) => line.includes(`agent-${id} `));
 }
 
 describe("inbox TUI", () => {
@@ -177,6 +193,21 @@ describe("inbox TUI", () => {
     assert.deepEqual(selectedMetadataLines(item, 23), []);
   });
 
+  test("calculates inbox capacity and keeps list offsets valid", () => {
+    assert.equal(inboxViewportLines(undefined, 2, false), 19);
+    assert.equal(inboxViewportLines(Number.NaN, 2, false), 19);
+    assert.equal(inboxViewportLines(30, 2, false), 25);
+    assert.equal(inboxViewportLines(4, 0, true), 1);
+
+    assert.equal(clampListOffset(-1, 30, 19), 0);
+    assert.equal(clampListOffset(999, 30, 19), 11);
+    assert.equal(clampListOffset(999, 5, 19), 0);
+    assert.equal(listOffsetForCursor(2, 3, 19), 2);
+    assert.equal(listOffsetForCursor(22, 3, 19), 4);
+    assert.equal(clampListOffset(listOffsetForCursor(99, 10, 19), 30, 19), 11);
+    assert.equal(clampListOffset(11, 29, 19), 10);
+  });
+
   test("renders one row per result with an unread indicator", () => {
     const fixture = makeFixture([makeItem("one", true), makeItem("two", false)]);
     const instance = render(h(createApp(fixture.port)));
@@ -228,6 +259,60 @@ describe("inbox TUI", () => {
       assert.deepEqual(fixture.calls.archived, ["two"]);
       assert.doesNotMatch(instance.lastFrame() ?? "", /agent-two/);
       assert.match(instance.lastFrame() ?? "", /Archived result two/);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("pages the inbox by one viewport and keeps the selected row visible", async () => {
+    const items = Array.from({ length: 30 }, (_, index) =>
+      makeItem(`inbox-${String(index).padStart(2, "0")}`),
+    );
+    const fixture = makeFixture(items);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      assert.equal(hasAgent(instance.lastFrame() ?? "", "inbox-00"), true);
+      assert.equal(hasAgent(instance.lastFrame() ?? "", "inbox-19"), false);
+
+      await sendInput(instance, "\u001b[6~");
+      let frame = instance.lastFrame() ?? "";
+      assert.equal(hasAgent(frame, "inbox-19"), true);
+      assert.equal(hasAgent(frame, "inbox-00"), false);
+
+      await sendInput(instance, "\u001b[5~");
+      frame = instance.lastFrame() ?? "";
+      assert.equal(hasAgent(frame, "inbox-00"), true);
+      assert.equal(hasAgent(frame, "inbox-19"), false);
+
+      await sendInput(instance, "\u001b[6~");
+      await sendInput(instance, "\u001b[B");
+      await sendInput(instance, "\r");
+      assert.deepEqual(fixture.calls.opened, ["inbox-20"]);
+      await sendInput(instance, "\u001b");
+
+      await sendInput(instance, "\u001b[6~");
+      frame = instance.lastFrame() ?? "";
+      assert.equal(hasAgent(frame, "inbox-29"), true);
+      assert.equal(hasAgent(frame, "inbox-10"), false);
+      await sendInput(instance, "\u001b[6~");
+      assert.equal(hasAgent(instance.lastFrame() ?? "", "inbox-29"), true);
+
+      await sendInput(instance, "\u001b[5~");
+      frame = instance.lastFrame() ?? "";
+      assert.equal(hasAgent(frame, "inbox-10"), true);
+      assert.equal(hasAgent(frame, "inbox-29"), false);
+      await sendInput(instance, "\u001b[5~");
+      await sendInput(instance, "\u001b[5~");
+      assert.equal(hasAgent(instance.lastFrame() ?? "", "inbox-00"), true);
+
+      await sendInput(instance, "\u001b[6~");
+      await sendInput(instance, "\u001b[6~");
+      await sendInput(instance, "a");
+      frame = instance.lastFrame() ?? "";
+      assert.deepEqual(fixture.calls.archived, ["inbox-29"]);
+      assert.equal(hasAgent(frame, "inbox-29"), false);
+      assert.equal(hasAgent(frame, "inbox-28"), true);
+      assert.match(frame, /Archived result inbox-29/);
     } finally {
       instance.unmount();
     }
@@ -314,6 +399,43 @@ describe("inbox TUI", () => {
         await tick();
       }
       assert.match(instance.lastFrame() ?? "", /line-0/);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("pages a long result by one viewport and clamps without changing arrow steps", async () => {
+    const item = makeItem("paged");
+    const rawText = Array.from({ length: 50 }, (_, index) => `line-${index}`).join("\n");
+    const fixture = makeFixture([item], {
+      details: new Map([[item.id, makeDetail(item, rawText)]]),
+    });
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      await sendInput(instance, "\r");
+      assert.match(instance.lastFrame() ?? "", /line 1-20 of 50/);
+
+      await sendInput(instance, "\u001b[6~");
+      let frame = instance.lastFrame() ?? "";
+      assert.match(frame, /line 21-40 of 50/);
+      assert.doesNotMatch(frame, /line-0\n/);
+
+      await sendInput(instance, "\u001b[5~");
+      assert.match(instance.lastFrame() ?? "", /line 1-20 of 50/);
+      await sendInput(instance, "\u001b[B");
+      assert.match(instance.lastFrame() ?? "", /line 2-21 of 50/);
+      await sendInput(instance, "\u001b[A");
+      await sendInput(instance, "\u001b[5~");
+      assert.match(instance.lastFrame() ?? "", /line 1-20 of 50/);
+
+      await sendInput(instance, "\u001b[6~");
+      await sendInput(instance, "\u001b[6~");
+      frame = instance.lastFrame() ?? "";
+      assert.match(frame, /line 31-50 of 50/);
+      await sendInput(instance, "\u001b[6~");
+      assert.match(instance.lastFrame() ?? "", /line 31-50 of 50/);
+      await sendInput(instance, "\u001b[A");
+      assert.match(instance.lastFrame() ?? "", /line 30-49 of 50/);
     } finally {
       instance.unmount();
     }

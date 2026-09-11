@@ -14,6 +14,8 @@ export interface InboxViewProps {
   items: readonly InboxItem[];
   cursor: number;
   width: number;
+  offset?: number;
+  limit?: number;
   status?: StatusMessage | null;
   onOpen: () => void;
   onCopy: () => void;
@@ -29,16 +31,69 @@ const NARROW_SEPARATOR = " ";
 const NO_SEPARATOR = "";
 const ELLIPSIS = "…";
 
+const DEFAULT_INBOX_ROWS = 24;
+const INBOX_FIXED_CHROME_LINES = 3;
 interface RowField {
   value: string;
   minimumWidth: number;
 }
 
-export const InboxView: FC<InboxViewProps> = ({ items, cursor, width, status = null }) => {
+export function inboxViewportLines(
+  rows: number | undefined,
+  metadataLines: number,
+  hasStatus: boolean,
+): number {
+  const terminalRows =
+    rows === undefined || !Number.isFinite(rows) ? DEFAULT_INBOX_ROWS : Math.floor(rows);
+  const metadata = Number.isFinite(metadataLines) ? Math.max(0, Math.floor(metadataLines)) : 0;
+  return Math.max(1, terminalRows - INBOX_FIXED_CHROME_LINES - metadata - (hasStatus ? 1 : 0));
+}
+
+export function clampListOffset(offset: number, itemCount: number, capacity: number): number {
+  const normalizedOffset = Number.isFinite(offset) ? Math.floor(offset) : 0;
+  const normalizedItemCount = Number.isFinite(itemCount) ? Math.max(0, Math.floor(itemCount)) : 0;
+  const normalizedCapacity = Number.isFinite(capacity) ? Math.max(1, Math.floor(capacity)) : 1;
+  const maxOffset = Math.max(0, normalizedItemCount - normalizedCapacity);
+  return Math.min(Math.max(0, normalizedOffset), maxOffset);
+}
+
+export function listOffsetForCursor(
+  cursor: number,
+  currentOffset: number,
+  capacity: number,
+): number {
+  const normalizedCursor = Number.isFinite(cursor) ? Math.max(0, Math.floor(cursor)) : 0;
+  const normalizedOffset = Number.isFinite(currentOffset)
+    ? Math.max(0, Math.floor(currentOffset))
+    : 0;
+  const normalizedCapacity = Number.isFinite(capacity) ? Math.max(1, Math.floor(capacity)) : 1;
+  if (normalizedCursor < normalizedOffset) {
+    return normalizedCursor;
+  }
+  if (normalizedCursor >= normalizedOffset + normalizedCapacity) {
+    return normalizedCursor - normalizedCapacity + 1;
+  }
+  return normalizedOffset;
+}
+
+export const InboxView: FC<InboxViewProps> = ({
+  items,
+  cursor,
+  width,
+  offset = 0,
+  limit,
+  status = null,
+}) => {
   const contentWidth = contentWidthFor(width);
-  const rows = items.map((item, index) => {
+  const rowOffset = Number.isFinite(offset) ? Math.max(0, Math.floor(offset)) : 0;
+  const rowLimit =
+    limit === undefined ? undefined : Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : 0;
+  const visibleItems =
+    rowLimit === undefined ? items.slice(rowOffset) : items.slice(rowOffset, rowOffset + rowLimit);
+  const rows = visibleItems.map((item, index) => {
+    const itemIndex = rowOffset + index;
     const row = formatInboxRow(item, contentWidth);
-    return h(Text, { key: item.id, inverse: index === cursor }, row);
+    return h(Text, { key: item.id, inverse: itemIndex === cursor }, row);
   });
   const metadataLines = selectedMetadataLines(items[cursor], contentWidth);
   const metadata =
@@ -66,7 +121,11 @@ export const InboxView: FC<InboxViewProps> = ({ items, cursor, width, status = n
       : h(Text, { dimColor: true }, "No results yet. Captured agent output will appear here."),
     metadata,
     statusElement(status),
-    h(Text, { dimColor: true }, "↑/↓ or k/j move · Enter open · y copy · a archive · q/Esc quit"),
+    h(
+      Text,
+      { dimColor: true },
+      "↑/↓ or k/j move · PageUp/PageDown page · Enter open · y copy · a archive · q/Esc quit",
+    ),
   );
 };
 
