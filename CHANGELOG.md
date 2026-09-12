@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-13
+
 ### Added
 
 - Mouse wheel navigation: one wheel notch moves three results in the Result Inbox, or scrolls three lines in the Result view.
@@ -47,6 +49,7 @@ First public release.
 - A completion inferred only from `blocked → idle` is not captured, because that transition can equally mean an approval prompt was cancelled.
 - Archived results stay in the database but cannot yet be browsed or restored from the inbox.
 
-[Unreleased]: https://github.com/j1nn0/herdr-harvest/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/j1nn0/herdr-harvest/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/j1nn0/herdr-harvest/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/j1nn0/herdr-harvest/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/j1nn0/herdr-harvest/releases/tag/v0.1.0
