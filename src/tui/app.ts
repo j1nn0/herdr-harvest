@@ -11,6 +11,7 @@ import {
   type StatusMessage,
   selectedMetadataLines,
 } from "./inbox-view.ts";
+import { parseWheelEvent, WHEEL_STEP } from "./mouse.ts";
 import { ResultView, resultViewportLines } from "./result-view.ts";
 
 const h = React.createElement;
@@ -140,6 +141,22 @@ export function createApp(port: InboxPort): FC {
     };
 
     useInput((input, key) => {
+      // Wheel reports are the one mouse input the inbox acts on. Everything
+      // else that is not a wheel report returns null and keeps falling through
+      // to the regular key handling below, where it matches nothing.
+      const wheel = parseWheelEvent(input);
+      if (wheel !== null) {
+        const step = wheel === "up" ? -WHEEL_STEP : WHEEL_STEP;
+        if (view === "inbox") {
+          setInboxPosition(cursor + step);
+        } else if (detail !== null) {
+          setScrollOffset((current) =>
+            clampScroll(current + step, detail.rawText.split("\n").length, viewport),
+          );
+        }
+        return;
+      }
+
       if (view === "inbox") {
         if (input === "q" || key.escape || input === "\u001b") {
           exit();

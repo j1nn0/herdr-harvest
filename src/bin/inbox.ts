@@ -8,6 +8,7 @@ import { loadConfig } from "../config/config.ts";
 import { openDatabase } from "../persistence/database.ts";
 import { SqliteResultStore } from "../persistence/result-store.ts";
 import { createApp } from "../tui/app.ts";
+import { disableWheelReporting, enableWheelReporting } from "../tui/mouse.ts";
 
 const h = React.createElement;
 
@@ -34,10 +35,15 @@ export async function runInbox(env: NodeJS.ProcessEnv = process.env): Promise<nu
       clipboard,
       now: () => Date.now(),
     });
+    // The inbox owns the mouse-reporting lifecycle: enabled before the TUI
+    // renders, disabled in the single `finally` below so every exit path
+    // (quit, unmount, render error) restores the terminal.
+    enableWheelReporting(process.stdout);
     const instance = render(h(createApp(port)));
     await instance.waitUntilExit();
     return 0;
   } finally {
+    disableWheelReporting(process.stdout);
     if (store === null) {
       db.close();
     } else {

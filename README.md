@@ -159,6 +159,7 @@ metadata lines disappear once there is no room for them.
 | ----------------------- | ------------------------------- |
 | `↑` / `↓`, `k` / `j`    | Move one result                 |
 | `PageUp` / `PageDown`   | Move one page                   |
+| `Mouse wheel`           | Move 3 results                  |
 | `Enter`                 | Open the result (marks it read) |
 | `y`                     | Copy the result                 |
 | `a`                     | Archive the result              |
@@ -170,6 +171,7 @@ metadata lines disappear once there is no room for them.
 | ----------------------- | --------------------- |
 | `↑`/`↓`, `k`/`j`        | Scroll a line         |
 | `PageUp` / `PageDown`   | Scroll a page         |
+| `Mouse wheel`           | Scroll 3 lines        |
 | `y`                     | Copy                  |
 | `a`                     | Archive               |
 | `Esc`                   | Back to the inbox     |

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Mouse wheel navigation: one wheel notch moves three results in the Result Inbox, or scrolls three lines in the Result view.
+
 ## [0.1.1] - 2026-09-11
 
 ### Changed
