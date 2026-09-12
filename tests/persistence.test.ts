@@ -699,4 +699,142 @@ describe("SqliteResultStore", () => {
       store.close();
     }
   });
+
+  test("separates archived results from the active list", () => {
+    const db = openDatabase(":memory:");
+    const store = new SqliteResultStore(db);
+    try {
+      const archived = inserted(
+        store.insert(makeInput({ capturedAtMs: 100, rawText: "archived output" })),
+      );
+      const active = inserted(
+        store.insert(makeInput({ capturedAtMs: 200, rawText: "active output" })),
+      );
+      store.markRead(archived.id, 500);
+      store.archive(archived.id, 1_000);
+
+      assert.deepEqual(
+        store.listArchived().map((result) => result.id),
+        [archived.id],
+      );
+      assert.equal(store.listArchived()[0]?.archivedAtMs, 1_000);
+      assert.equal(store.listArchived()[0]?.readAtMs, 500);
+      assert.deepEqual(
+        store.list().map((result) => result.id),
+        [active.id],
+      );
+      assert.deepEqual(
+        store
+          .list({ includeArchived: true })
+          .map((result) => result.id)
+          .sort(),
+        [active.id, archived.id].sort(),
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  test("orders archived results by archive time, captured time, then id", () => {
+    const db = openDatabase(":memory:");
+    const store = new SqliteResultStore(db);
+    try {
+      const first = inserted(store.insert(makeInput({ capturedAtMs: 100, rawText: "first" })));
+      const second = inserted(store.insert(makeInput({ capturedAtMs: 200, rawText: "second" })));
+      const third = inserted(store.insert(makeInput({ capturedAtMs: 300, rawText: "third" })));
+      store.archive(first.id, 1_000);
+      store.archive(second.id, 2_000);
+      store.archive(third.id, 3_000);
+
+      const olderCapture = inserted(
+        store.insert(makeInput({ capturedAtMs: 10, rawText: "older capture" })),
+      );
+      const newerCapture = inserted(
+        store.insert(makeInput({ capturedAtMs: 20, rawText: "newer capture" })),
+      );
+      store.archive(olderCapture.id, 4_000);
+      store.archive(newerCapture.id, 4_000);
+
+      const twinA = inserted(store.insert(makeInput({ capturedAtMs: 30, rawText: "twin a" })));
+      const twinB = inserted(store.insert(makeInput({ capturedAtMs: 30, rawText: "twin b" })));
+      store.archive(twinA.id, 5_000);
+      store.archive(twinB.id, 5_000);
+
+      const twins = [twinA.id, twinB.id].sort((left, right) => (left < right ? 1 : -1));
+      assert.deepEqual(
+        store.listArchived().map((result) => result.id),
+        [...twins, newerCapture.id, olderCapture.id, third.id, second.id, first.id],
+      );
+      assert.deepEqual(
+        store.listArchived({ limit: 3 }).map((result) => result.id),
+        [...twins, newerCapture.id],
+      );
+      assert.deepEqual(store.listArchived({ limit: 0 }), []);
+      assert.throws(() => store.listArchived({ limit: -1 }), RangeError);
+      assert.throws(() => store.listArchived({ limit: 1.5 }), RangeError);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("restores an archived result without changing its stored fields", () => {
+    const db = openDatabase(":memory:");
+    const store = new SqliteResultStore(db);
+    try {
+      const rawText = "first line\n\nsecond line 世界 🚀\n";
+      const input = makeInput({ capturedAtMs: 1_234, rawText });
+      const result = inserted(store.insert(input));
+      store.markRead(result.id, 111);
+      assert.equal(store.archive(result.id, 222)?.archivedAtMs, 222);
+
+      const restored = store.restore(result.id);
+
+      assert.deepEqual(restored, { ...result, readAtMs: 111, archivedAtMs: null });
+      assert.equal(restored?.rawText, rawText);
+      assert.equal(restored?.capturedAtMs, 1_234);
+      assert.equal(restored?.contentHash, result.contentHash);
+      assert.equal(restored?.dedupKey, result.dedupKey);
+      assert.equal(restored?.agentSessionKind, input.agentSessionKind);
+      assert.equal(restored?.agentSessionValue, input.agentSessionValue);
+      assert.equal(restored?.herdrSessionKey, input.herdrSessionKey);
+      assert.equal(restored?.herdrSessionLabel, input.herdrSessionLabel);
+      assert.equal(restored?.paneId, input.paneId);
+      assert.deepEqual(store.listArchived(), []);
+      assert.deepEqual(
+        store.list().map((row) => row.id),
+        [result.id],
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  test("is a no-op for active rows and supports an archive, restore, archive cycle", () => {
+    const db = openDatabase(":memory:");
+    const store = new SqliteResultStore(db);
+    try {
+      const result = inserted(store.insert(makeInput()));
+
+      assert.equal(store.restore("missing"), null);
+      assert.deepEqual(store.restore(result.id), result);
+
+      assert.equal(store.archive(result.id, 1_000)?.archivedAtMs, 1_000);
+      assert.equal(store.restore(result.id)?.archivedAtMs, null);
+      assert.equal(store.archive(result.id, 2_000)?.archivedAtMs, 2_000);
+      assert.deepEqual(store.list(), []);
+      assert.deepEqual(
+        store.listArchived().map((row) => row.id),
+        [result.id],
+      );
+
+      assert.equal(store.restore(result.id)?.archivedAtMs, null);
+      assert.deepEqual(store.listArchived(), []);
+      assert.deepEqual(
+        store.list({ includeArchived: true }).map((row) => row.id),
+        [result.id],
+      );
+    } finally {
+      store.close();
+    }
+  });
 });

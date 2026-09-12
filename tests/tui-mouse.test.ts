@@ -37,6 +37,7 @@ interface Fixture {
   calls: {
     opened: string[];
     archived: string[];
+    restored: string[];
     copied: string[];
   };
 }
@@ -72,21 +73,47 @@ function makeDetail(item: InboxItem, rawText = `first-${item.id}\nsecond-${item.
   };
 }
 
+function makeArchivedItem(id: string, unread = true): InboxItem {
+  return { ...makeItem(id, unread), archived: true };
+}
+
 function makeFixture(items: InboxItem[], options: FixtureOptions = {}): Fixture {
-  let activeItems = [...items];
-  const details = options.details ?? new Map(items.map((item) => [item.id, makeDetail(item)]));
-  const calls = { opened: [], archived: [], copied: [] } as Fixture["calls"];
+  const members = [...items];
+  const calls = { opened: [], archived: [], restored: [], copied: [] } as Fixture["calls"];
+
+  const detailFor = (id: string): InboxDetail | null => {
+    const member = members.find((candidate) => candidate.id === id);
+    if (member === undefined) {
+      return null;
+    }
+    const custom = options.details?.get(id);
+    return custom === undefined ? makeDetail(member) : { ...custom, archived: member.archived };
+  };
+
   const port: InboxPort = {
-    list: () => activeItems,
+    list: (mode) =>
+      members.filter((item) => (mode === "archived" ? item.archived : !item.archived)),
     open: (id) => {
       calls.opened.push(id);
-      return details.get(id) ?? null;
+      return detailFor(id);
     },
     archive: (id) => {
       calls.archived.push(id);
-      const before = activeItems.length;
-      activeItems = activeItems.filter((item) => item.id !== id);
-      return activeItems.length !== before;
+      const member = members.find((candidate) => candidate.id === id);
+      if (member === undefined || member.archived) {
+        return false;
+      }
+      member.archived = true;
+      return true;
+    },
+    restore: (id) => {
+      calls.restored.push(id);
+      const member = members.find((candidate) => candidate.id === id);
+      if (member === undefined || !member.archived) {
+        return false;
+      }
+      member.archived = false;
+      return true;
     },
     copy: (id) => {
       calls.copied.push(id);
@@ -405,7 +432,7 @@ describe("wheel navigation in the TUI", () => {
       const frame = instance.lastFrame() ?? "";
       assert.match(frame, /Harvest Result Inbox/);
       assert.equal(hasAgent(frame, "one"), true);
-      assert.deepEqual(fixture.calls, { opened: [], archived: [], copied: [] });
+      assert.deepEqual(fixture.calls, { opened: [], archived: [], restored: [], copied: [] });
 
       await sendInput(instance, "\r");
       assert.deepEqual(fixture.calls.opened, ["one"]);
@@ -704,6 +731,60 @@ describe("inbox position batching", () => {
 
       await sendInput(instance, "\r");
       assert.deepEqual(fixture.calls.opened, ["item-13"]);
+    } finally {
+      instance.unmount();
+    }
+  });
+});
+
+/**
+ * The wheel shares the same position model as the keys, so it moves and clamps
+ * inside whichever collection the inbox is showing.
+ */
+describe("wheel navigation in the Archived collection", () => {
+  test("moves and clamps the wheel through archived results", async () => {
+    const archived = Array.from({ length: 12 }, (_, index) =>
+      makeArchivedItem(`arch-${String(index).padStart(2, "0")}`),
+    );
+    const fixture = makeFixture([...archived, makeItem("active-zero")]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      setTerminalSize(instance, 80, 10);
+      await sendInput(instance, "\t");
+      assert.equal(hasAgent(instance.lastFrame() ?? "", "arch-00"), true);
+      assert.equal(hasAgent(instance.lastFrame() ?? "", "active-zero"), false);
+
+      await sendInput(instance, WHEEL_DOWN);
+      await sendInput(instance, WHEEL_DOWN);
+      let frame = instance.lastFrame() ?? "";
+      assert.equal(hasAgent(frame, "arch-06"), true);
+      assert.equal(hasAgent(frame, "arch-00"), false);
+
+      await sendInput(instance, "\r");
+      assert.deepEqual(fixture.calls.opened, ["arch-06"]);
+      await sendInput(instance, "\u001B");
+
+      await sendInput(instance, WHEEL_UP);
+      await sendInput(instance, "\r");
+      assert.deepEqual(fixture.calls.opened, ["arch-06", "arch-03"]);
+      await sendInput(instance, "\u001B");
+
+      for (let index = 0; index < 10; index += 1) {
+        await sendInput(instance, WHEEL_DOWN);
+      }
+      frame = instance.lastFrame() ?? "";
+      assert.equal(hasAgent(frame, "arch-11"), true);
+      await sendInput(instance, "\r");
+      assert.deepEqual(fixture.calls.opened.at(-1), "arch-11");
+      await sendInput(instance, "\u001B");
+
+      for (let index = 0; index < 5; index += 1) {
+        await sendInput(instance, WHEEL_UP);
+      }
+      frame = instance.lastFrame() ?? "";
+      assert.equal(hasAgent(frame, "arch-00"), true);
+      await sendInput(instance, "\r");
+      assert.deepEqual(fixture.calls.opened.at(-1), "arch-00");
     } finally {
       instance.unmount();
     }

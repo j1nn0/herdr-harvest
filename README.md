@@ -131,7 +131,7 @@ Unread results stay at the top; select one to inspect it.
   explorer  c76a0f   herdr-plugin-sdk  ago 12m  All 47 tests pass…
 Herdr: default
 Pane: π - herdr-harvest
-↑/↓ or k/j move · Enter open · y copy · a archive · q/Esc quit
+↑/↓ or k/j move · Enter open · y copy · a archive · Tab archived · q/Esc quit
 ```
 
 The six characters after the agent are the **agent session** — the thing that tells
@@ -163,6 +163,8 @@ metadata lines disappear once there is no room for them.
 | `Enter`                 | Open the result (marks it read) |
 | `y`                     | Copy the result                 |
 | `a`                     | Archive the result              |
+| `Tab`                   | Switch Active / Archived        |
+| `r`                     | Restore the result (Archived)   |
 | `q` / `Esc`             | Close the inbox                 |
 
 **Result view**
@@ -173,8 +175,11 @@ metadata lines disappear once there is no room for them.
 | `PageUp` / `PageDown`   | Scroll a page         |
 | `Mouse wheel`           | Scroll 3 lines        |
 | `y`                     | Copy                  |
-| `a`                     | Archive               |
+| `a`                     | Archive (active)      |
+| `r`                     | Restore (archived)    |
 | `Esc`                   | Back to the inbox     |
+
+`Tab` switches between the Active and Archived collections. Archived results are ordered by the time they were archived, newest first, so the result you just archived is the one at the top. `r` puts the selected archived result back into the Active collection, from the list or from its detail view.
 
 ### Copying is fail-visible
 
@@ -288,7 +293,6 @@ Components are length-prefixed before hashing so a value containing the separato
 - **Capture is bounded by what Herdr can still see.** Full-screen agents draw in the terminal's alternate screen; Harvest captures while the agent is still alive, but rows already scrolled out of reach are not recoverable.
 - **A completion straight out of `blocked` is not captured.** If an agent finishes so quickly after you answer an approval prompt that Herdr never reports `working` in between, that result is missed. See [Deciding what counts as a completion](#deciding-what-counts-as-a-completion) for why that trade is deliberate.
 - **OSC 52 delivery cannot be confirmed.** It is reported as unconfirmed rather than as success.
-- **No archived-results view.** Archiving hides a result from the inbox; reading it back means querying the database directly.
 - **Herdr must be running** for capture to happen at all — there is no offline backfill.
 
 ## Non-goals for v0.1

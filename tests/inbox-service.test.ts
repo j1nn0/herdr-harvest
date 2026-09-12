@@ -357,4 +357,114 @@ describe("inbox service", () => {
       store.close();
     }
   });
+
+  test("lists active results by default and archived results on request", () => {
+    const { service, store } = makeService();
+    try {
+      const active = inserted(store, makeInput({ rawText: "active result" }));
+      const archived = inserted(store, makeInput({ rawText: "archived result" }));
+      assert.equal(service.archive(archived.id), true);
+
+      assert.deepEqual(
+        service.list().map((item) => item.id),
+        [active.id],
+      );
+      assert.deepEqual(
+        service.list("active").map((item) => item.id),
+        [active.id],
+      );
+      assert.deepEqual(
+        service.list("archived").map((item) => item.id),
+        [archived.id],
+      );
+      assert.equal(service.list()[0]?.archived, false);
+      assert.equal(service.list("archived")[0]?.archived, true);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("orders archived results newest first", () => {
+    let now = 1_000;
+    const store = new SqliteResultStore(openDatabase(":memory:"));
+    const service = createInboxService({ store, clipboard: successfulClipboard(), now: () => now });
+    try {
+      const first = inserted(store, makeInput({ capturedAtMs: 10, rawText: "first archived" }));
+      const second = inserted(store, makeInput({ capturedAtMs: 20, rawText: "second archived" }));
+      now = 5_000;
+      assert.equal(service.archive(first.id), true);
+      now = 6_000;
+      assert.equal(service.archive(second.id), true);
+
+      assert.deepEqual(
+        service.list("archived").map((item) => item.id),
+        [second.id, first.id],
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  test("restores an archived result back into the active list", () => {
+    const { service, store } = makeService();
+    try {
+      const result = inserted(store, makeInput());
+
+      assert.equal(service.restore(result.id), false);
+      assert.equal(service.restore("missing"), false);
+      assert.equal(service.archive(result.id), true);
+      assert.deepEqual(
+        service.list("archived").map((item) => item.id),
+        [result.id],
+      );
+
+      assert.equal(service.restore(result.id), true);
+      assert.deepEqual(service.list("archived"), []);
+      assert.deepEqual(
+        service.list().map((item) => item.id),
+        [result.id],
+      );
+      assert.equal(store.get(result.id)?.archivedAtMs, null);
+      assert.equal(service.restore(result.id), false);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("opens and copies an archived result without restoring it", async () => {
+    const copied: string[] = [];
+    const clipboard: ClipboardProvider = {
+      name: "fake",
+      copy: async (text) => {
+        copied.push(text);
+        return { provider: "fake", confirmed: true };
+      },
+    };
+    const { service, store } = makeService(clipboard);
+    try {
+      const rawText = "archived body 世界 🚀\nsecond line";
+      const result = inserted(store, makeInput({ rawText }));
+      assert.equal(service.archive(result.id), true);
+
+      const detail = service.open(result.id);
+      assert.equal(detail?.id, result.id);
+      assert.equal(detail?.rawText, rawText);
+      assert.equal(detail?.archived, true);
+      assert.equal(detail?.unread, false);
+      assert.equal(store.get(result.id)?.readAtMs, 9_000);
+      assert.equal(store.get(result.id)?.archivedAtMs, 9_000);
+
+      const report = await service.copy(result.id);
+      assert.deepEqual(report, { provider: "fake", confirmed: true });
+      assert.deepEqual(copied, [rawText]);
+
+      assert.deepEqual(service.list(), []);
+      assert.deepEqual(
+        service.list("archived").map((item) => item.id),
+        [result.id],
+      );
+    } finally {
+      store.close();
+    }
+  });
 });

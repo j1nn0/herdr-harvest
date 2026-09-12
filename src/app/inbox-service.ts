@@ -25,10 +25,14 @@ export interface InboxDetail extends InboxItem {
   paneId: string;
 }
 
+/** Which collection the inbox lists. Active is the default. */
+export type InboxMode = "active" | "archived";
+
 export interface InboxPort {
-  list(): InboxItem[];
+  list(mode?: InboxMode): InboxItem[];
   open(id: string): InboxDetail | null;
   archive(id: string): boolean;
+  restore(id: string): boolean;
   copy(id: string): Promise<CopyReport>;
 }
 
@@ -38,11 +42,17 @@ export function createInboxService(deps: {
   now: () => number;
 }): InboxPort {
   return {
-    list: () => deps.store.list().map(toItem),
+    list: (mode) => listResults(deps.store, mode),
     open: (id) => openResult(deps.store, id, deps.now),
     archive: (id) => archiveResult(deps.store, id, deps.now),
+    restore: (id) => restoreResult(deps.store, id),
     copy: (id) => copyResult(deps.store, deps.clipboard, id),
   };
+}
+
+function listResults(store: ResultStore, mode: InboxMode | undefined): InboxItem[] {
+  const results = mode === "archived" ? store.listArchived() : store.list();
+  return results.map(toItem);
 }
 
 function openResult(store: ResultStore, id: string, now: () => number): InboxDetail | null {
@@ -61,6 +71,14 @@ function archiveResult(store: ResultStore, id: string, now: () => number): boole
     return false;
   }
   return store.archive(id, now()) !== null;
+}
+
+function restoreResult(store: ResultStore, id: string): boolean {
+  const result = store.get(id);
+  if (result === null || result.archivedAtMs === null) {
+    return false;
+  }
+  return store.restore(id) !== null;
 }
 
 function copyResult(

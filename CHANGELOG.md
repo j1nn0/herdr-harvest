@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - Mouse wheel navigation: one wheel notch moves three results in the Result Inbox, or scrolls three lines in the Result view.
+- Archive browse and restore: `Tab` toggles the Active and Archived collections, archived results are listed newest-archived first, and `r` restores an archived result to the Active collection.
 
 ## [0.1.1] - 2026-09-11
 

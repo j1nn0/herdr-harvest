@@ -19,9 +19,11 @@ export interface ResultStore {
     atMs: number;
   }): { previousStatus: string | null };
   list(options?: { includeArchived?: boolean; limit?: number }): HarvestResult[];
+  listArchived(options?: { limit?: number }): HarvestResult[];
   get(id: string): HarvestResult | null;
   markRead(id: string, atMs: number): HarvestResult | null;
   archive(id: string, atMs: number): HarvestResult | null;
+  restore(id: string): HarvestResult | null;
   close(): void;
   distinctHerdrSessionKeys(): Array<string | null>;
 }
@@ -156,13 +158,24 @@ export class SqliteResultStore implements ResultStore {
 
   list(options: { includeArchived?: boolean; limit?: number } = {}): HarvestResult[] {
     const limit = options.limit;
-    if (limit !== undefined && (!Number.isInteger(limit) || limit < 0)) {
-      throw new RangeError("Result list limit must be a non-negative integer.");
-    }
+    assertValidListLimit(limit);
 
     const where = options.includeArchived ? "" : "WHERE archived_at_ms IS NULL";
     const order = "ORDER BY (read_at_ms IS NOT NULL) ASC, captured_at_ms DESC, id DESC";
     const sql = `SELECT * FROM results ${where} ${order}`;
+    const rows =
+      limit === undefined
+        ? (this.db.prepare(sql).all() as SqlRow[])
+        : (this.db.prepare(`${sql} LIMIT ?`).all(limit) as SqlRow[]);
+    return rows.map(mapRow);
+  }
+
+  listArchived(options: { limit?: number } = {}): HarvestResult[] {
+    const limit = options.limit;
+    assertValidListLimit(limit);
+
+    const order = "ORDER BY archived_at_ms DESC, captured_at_ms DESC, id DESC";
+    const sql = `SELECT * FROM results WHERE archived_at_ms IS NOT NULL ${order}`;
     const rows =
       limit === undefined
         ? (this.db.prepare(sql).all() as SqlRow[])
@@ -202,6 +215,18 @@ export class SqliteResultStore implements ResultStore {
     return row === undefined ? null : mapRow(row);
   }
 
+  restore(id: string): HarvestResult | null {
+    const row = withTransaction(this.db, () => {
+      this.db
+        .prepare(
+          "UPDATE results SET archived_at_ms = NULL WHERE id = ? AND archived_at_ms IS NOT NULL",
+        )
+        .run(id);
+      return this.rowById(id);
+    });
+    return row === undefined ? null : mapRow(row);
+  }
+
   close(): void {
     this.db.close();
   }
@@ -234,6 +259,12 @@ function mapRow(row: SqlRow): HarvestResult {
     readAtMs: row.read_at_ms as number | null,
     archivedAtMs: row.archived_at_ms as number | null,
   };
+}
+
+function assertValidListLimit(limit: number | undefined): void {
+  if (limit !== undefined && (!Number.isInteger(limit) || limit < 0)) {
+    throw new RangeError("Result list limit must be a non-negative integer.");
+  }
 }
 
 function lifecycleSessionKey(herdrSessionKey: string | null): string {

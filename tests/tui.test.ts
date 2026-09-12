@@ -5,7 +5,7 @@ import React from "react";
 import type { InboxDetail, InboxItem, InboxPort } from "../src/app/inbox-service.ts";
 import type { CopyReport } from "../src/clipboard/provider.ts";
 import { ClipboardError } from "../src/clipboard/provider.ts";
-import { createApp } from "../src/tui/app.ts";
+import { createApp, formatBytes } from "../src/tui/app.ts";
 import {
   clampListOffset,
   displayWidth,
@@ -27,6 +27,7 @@ interface Fixture {
   calls: {
     opened: string[];
     archived: string[];
+    restored: string[];
     copied: string[];
   };
 }
@@ -46,6 +47,10 @@ function makeItem(id: string, unread = true): InboxItem {
   };
 }
 
+function makeArchivedItem(id: string, unread = true): InboxItem {
+  return { ...makeItem(id, unread), archived: true };
+}
+
 function makeDetail(item: InboxItem, rawText = `first-${item.id}\nsecond-${item.id}`): InboxDetail {
   return {
     ...item,
@@ -57,20 +62,42 @@ function makeDetail(item: InboxItem, rawText = `first-${item.id}\nsecond-${item.
 }
 
 function makeFixture(items: InboxItem[], options: FixtureOptions = {}): Fixture {
-  let activeItems = [...items];
-  const details = options.details ?? new Map(items.map((item) => [item.id, makeDetail(item)]));
-  const calls = { opened: [], archived: [], copied: [] } as Fixture["calls"];
+  const members = [...items];
+  const calls = { opened: [], archived: [], restored: [], copied: [] } as Fixture["calls"];
+
+  const detailFor = (id: string): InboxDetail | null => {
+    const member = members.find((candidate) => candidate.id === id);
+    if (member === undefined) {
+      return null;
+    }
+    const custom = options.details?.get(id);
+    return custom === undefined ? makeDetail(member) : { ...custom, archived: member.archived };
+  };
+
   const port: InboxPort = {
-    list: () => activeItems,
+    list: (mode) =>
+      members.filter((item) => (mode === "archived" ? item.archived : !item.archived)),
     open: (id) => {
       calls.opened.push(id);
-      return details.get(id) ?? null;
+      return detailFor(id);
     },
     archive: (id) => {
       calls.archived.push(id);
-      const before = activeItems.length;
-      activeItems = activeItems.filter((item) => item.id !== id);
-      return activeItems.length !== before;
+      const member = members.find((candidate) => candidate.id === id);
+      if (member === undefined || member.archived) {
+        return false;
+      }
+      member.archived = true;
+      return true;
+    },
+    restore: (id) => {
+      calls.restored.push(id);
+      const member = members.find((candidate) => candidate.id === id);
+      if (member === undefined || !member.archived) {
+        return false;
+      }
+      member.archived = false;
+      return true;
     },
     copy: (id) => {
       calls.copied.push(id);
@@ -658,6 +685,387 @@ describe("inbox TUI", () => {
       await tick();
 
       assert.deepEqual(fixture.calls.opened, ["two"]);
+    } finally {
+      instance.unmount();
+    }
+  });
+});
+
+/**
+ * The Active and Archived collections share one cursor/offset model and one
+ * navigation path; only the action keys and the chrome differ. Tab is the only
+ * way to switch, and it is inert while a detail is open, so Esc always returns
+ * to the collection the detail came from.
+ */
+describe("inbox collections", () => {
+  test("switches between the active and archived collections with Tab", async () => {
+    const fixture = makeFixture([
+      makeItem("active-one"),
+      makeItem("active-two"),
+      makeArchivedItem("archived-one"),
+    ]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      let frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Result Inbox · 2 results/);
+      assert.equal(hasAgent(frame, "active-one"), true);
+      assert.equal(hasAgent(frame, "archived-one"), false);
+
+      await sendInput(instance, "\t");
+      frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Archived Results · 1 result/);
+      assert.match(frame, /Newest archived first; select one to inspect it\./);
+      assert.equal(hasAgent(frame, "archived-one"), true);
+      assert.equal(hasAgent(frame, "active-one"), false);
+
+      await sendInput(instance, "\t");
+      frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Result Inbox · 2 results/);
+      assert.equal(hasAgent(frame, "active-one"), true);
+      assert.equal(hasAgent(frame, "archived-one"), false);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("shows a distinct empty state for each collection", async () => {
+    const fixture = makeFixture([]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      assert.match(
+        instance.lastFrame() ?? "",
+        /No results yet\. Captured agent output will appear here\./,
+      );
+
+      await sendInput(instance, "\t");
+      const frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Archived Results · 0 results/);
+      assert.match(frame, /No archived results\./);
+      assert.doesNotMatch(frame, /No results yet/);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("resets the cursor and list offset when the collection switches", async () => {
+    const items = Array.from({ length: 30 }, (_, index) =>
+      makeItem(`item-${String(index).padStart(2, "0")}`),
+    );
+    const fixture = makeFixture([...items, makeArchivedItem("archived-zero")]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      setTerminalSize(instance, 80, 10);
+      for (let index = 0; index < 20; index += 1) {
+        await sendInput(instance, "j");
+      }
+      let frame = instance.lastFrame() ?? "";
+      assert.equal(hasAgent(frame, "item-19"), true);
+      assert.equal(hasAgent(frame, "item-00"), false);
+
+      await sendInput(instance, "\t");
+      frame = instance.lastFrame() ?? "";
+      assert.equal(hasAgent(frame, "archived-zero"), true);
+
+      await sendInput(instance, "\t");
+      frame = instance.lastFrame() ?? "";
+      assert.equal(hasAgent(frame, "item-00"), true);
+      assert.equal(hasAgent(frame, "item-19"), false);
+
+      await sendInput(instance, "\r");
+      assert.deepEqual(fixture.calls.opened, ["item-00"]);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("navigates and opens results inside the archived collection", async () => {
+    const archived = Array.from({ length: 25 }, (_, index) =>
+      makeArchivedItem(`arch-${String(index).padStart(2, "0")}`),
+    );
+    const fixture = makeFixture([...archived, makeItem("active-zero")]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      await sendInput(instance, "\t");
+      let frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Archived Results · 25 results/);
+      assert.equal(hasAgent(frame, "arch-00"), true);
+      assert.equal(hasAgent(frame, "active-zero"), false);
+
+      await sendInput(instance, "\u001B[B");
+      await sendInput(instance, "\r");
+      assert.match(instance.lastFrame() ?? "", /Harvest Archived Result · agent-arch-01/);
+
+      await sendInput(instance, "\u001B");
+      frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Archived Results · 25 results/);
+
+      await sendInput(instance, "\u001B[6~");
+      await sendInput(instance, "\r");
+      assert.match(instance.lastFrame() ?? "", /Harvest Archived Result · agent-arch-20/);
+
+      await sendInput(instance, "\u001B");
+      await sendInput(instance, "\u001B[5~");
+      await sendInput(instance, "\r");
+      assert.match(instance.lastFrame() ?? "", /Harvest Archived Result · agent-arch-01/);
+
+      await sendInput(instance, "\u001B");
+      await sendInput(instance, "k");
+      await sendInput(instance, "\r");
+      assert.match(instance.lastFrame() ?? "", /Harvest Archived Result · agent-arch-00/);
+      assert.deepEqual(fixture.calls.opened, ["arch-01", "arch-20", "arch-01", "arch-00"]);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("copies the selected archived result with y", async () => {
+    const fixture = makeFixture([makeArchivedItem("arch-copy")]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      await sendInput(instance, "\t");
+      await sendInput(instance, "y");
+
+      const frame = instance.lastFrame() ?? "";
+      assert.deepEqual(fixture.calls.copied, ["arch-copy"]);
+      assert.match(frame, /Copied result to clipboard \(fake\)/);
+      assert.equal(hasAgent(frame, "arch-copy"), true);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("restores the selected archived result and removes it from the collection", async () => {
+    const fixture = makeFixture([makeArchivedItem("arch-one"), makeArchivedItem("arch-two")]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      await sendInput(instance, "\t");
+      await sendInput(instance, "r");
+
+      const frame = instance.lastFrame() ?? "";
+      assert.deepEqual(fixture.calls.restored, ["arch-one"]);
+      assert.match(frame, /Restored result arch-one\./);
+      assert.match(frame, /Harvest Archived Results · 1 result/);
+      assert.equal(hasAgent(frame, "arch-one"), false);
+      assert.equal(hasAgent(frame, "arch-two"), true);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("restores the only archived result and shows the empty state", async () => {
+    const fixture = makeFixture([makeArchivedItem("arch-only")]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      await sendInput(instance, "\t");
+      await sendInput(instance, "r");
+
+      let frame = instance.lastFrame() ?? "";
+      assert.deepEqual(fixture.calls.restored, ["arch-only"]);
+      assert.match(frame, /Restored result arch-only\./);
+      assert.match(frame, /No archived results\./);
+
+      await sendInput(instance, "\t");
+      frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Result Inbox · 1 result/);
+      assert.equal(hasAgent(frame, "arch-only"), true);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("restores archived rows at the top, middle, and end with the cursor kept visible", async () => {
+    const archived = Array.from({ length: 12 }, (_, index) =>
+      makeArchivedItem(`arch-${String(index).padStart(2, "0")}`),
+    );
+    const fixture = makeFixture(archived);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      setTerminalSize(instance, 80, 10);
+      await sendInput(instance, "\t");
+
+      await sendInput(instance, "r");
+      let frame = instance.lastFrame() ?? "";
+      assert.deepEqual(fixture.calls.restored, ["arch-00"]);
+      assert.equal(hasAgent(frame, "arch-00"), false);
+      assert.equal(hasAgent(frame, "arch-01"), true);
+
+      for (let index = 0; index < 5; index += 1) {
+        await sendInput(instance, "j");
+      }
+      await sendInput(instance, "r");
+      frame = instance.lastFrame() ?? "";
+      assert.deepEqual(fixture.calls.restored, ["arch-00", "arch-06"]);
+      assert.equal(hasAgent(frame, "arch-06"), false);
+      assert.equal(hasAgent(frame, "arch-07"), true);
+
+      for (let index = 0; index < 12; index += 1) {
+        await sendInput(instance, "j");
+      }
+      await sendInput(instance, "r");
+      frame = instance.lastFrame() ?? "";
+      assert.deepEqual(fixture.calls.restored, ["arch-00", "arch-06", "arch-11"]);
+      assert.equal(hasAgent(frame, "arch-11"), false);
+      assert.equal(hasAgent(frame, "arch-10"), true);
+
+      await sendInput(instance, "\r");
+      assert.deepEqual(fixture.calls.opened.at(-1), "arch-10");
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("ignores the other collection's action key", async () => {
+    const fixture = makeFixture([makeItem("active-one"), makeArchivedItem("arch-one")]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      await sendInput(instance, "r");
+      assert.deepEqual(fixture.calls.restored, []);
+      assert.equal(hasAgent(instance.lastFrame() ?? "", "active-one"), true);
+
+      await sendInput(instance, "\t");
+      await sendInput(instance, "a");
+      const frame = instance.lastFrame() ?? "";
+      assert.deepEqual(fixture.calls.archived, []);
+      assert.match(frame, /Harvest Archived Results · 1 result/);
+      assert.equal(hasAgent(frame, "arch-one"), true);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("archives the last active result", async () => {
+    const fixture = makeFixture([makeItem("only-active")]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      await sendInput(instance, "a");
+
+      const frame = instance.lastFrame() ?? "";
+      assert.deepEqual(fixture.calls.archived, ["only-active"]);
+      assert.match(frame, /Archived result only-active\./);
+      assert.match(frame, /No results yet\. Captured agent output will appear here\./);
+      assert.equal(hasAgent(frame, "only-active"), false);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("swaps archive and restore by collection in the Result view", async () => {
+    const fixture = makeFixture([makeArchivedItem("arch-one"), makeItem("active-one")]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      await sendInput(instance, "\r");
+      assert.match(instance.lastFrame() ?? "", /Harvest Result · agent-active-one/);
+      assert.match(instance.lastFrame() ?? "", /y copy · a archive · Esc inbox/);
+
+      await sendInput(instance, "r");
+      assert.deepEqual(fixture.calls.restored, []);
+      assert.match(instance.lastFrame() ?? "", /Harvest Result · agent-active-one/);
+
+      await sendInput(instance, "a");
+      assert.deepEqual(fixture.calls.archived, ["active-one"]);
+      assert.match(instance.lastFrame() ?? "", /Archived result active-one\./);
+      assert.match(instance.lastFrame() ?? "", /Harvest Result Inbox/);
+
+      await sendInput(instance, "\t");
+      await sendInput(instance, "\r");
+      assert.match(instance.lastFrame() ?? "", /Harvest Archived Result · agent-arch-one/);
+      assert.match(instance.lastFrame() ?? "", /y copy · r restore · Esc inbox/);
+
+      await sendInput(instance, "a");
+      assert.deepEqual(fixture.calls.archived, ["active-one"]);
+      assert.match(instance.lastFrame() ?? "", /Harvest Archived Result · agent-arch-one/);
+
+      await sendInput(instance, "r");
+      const frame = instance.lastFrame() ?? "";
+      assert.deepEqual(fixture.calls.restored, ["arch-one"]);
+      assert.match(frame, /Restored result arch-one\./);
+      assert.match(frame, /Harvest Archived Results · 1 result/);
+      assert.equal(hasAgent(frame, "arch-one"), false);
+      assert.equal(hasAgent(frame, "active-one"), true);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("copies an archived detail, pages it, and returns to the Archived collection", async () => {
+    const item = makeArchivedItem("arch");
+    const rawText = Array.from(
+      { length: 40 },
+      (_, index) => `body-line-${String(index).padStart(2, "0")} ${"/nested/".repeat(12)}日本語🚀`,
+    ).join("\n");
+    const details = new Map([[item.id, makeDetail(item, rawText)]]);
+    const copied: string[] = [];
+    const fixture = makeFixture([item], {
+      details,
+      copy: async (id) => {
+        copied.push(id);
+        assert.equal(details.get(id)?.rawText, rawText);
+        return { provider: "fake", confirmed: true };
+      },
+    });
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      setTerminalSize(instance, 40, 20);
+      await sendInput(instance, "\t");
+      await sendInput(instance, "\r");
+
+      let frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Archived Result · agent-arch/);
+      assert.match(frame, /line 1-15 of 40/);
+      assert.equal(resultBodyRows(frame).length, 15);
+
+      await sendInput(instance, "y");
+      assert.deepEqual(copied, ["arch"]);
+      const copiedStatus = `Copied ${formatBytes(Buffer.byteLength(rawText, "utf8"))} to clipboard (fake)`;
+      const frameAfterCopy = instance.lastFrame() ?? "";
+      assert.equal(frameAfterCopy.includes(copiedStatus), true, frameAfterCopy);
+
+      await sendInput(instance, "\u001B[6~");
+      assert.match(instance.lastFrame() ?? "", /line 16-30 of 40/);
+      await sendInput(instance, "\u001B[5~");
+      assert.match(instance.lastFrame() ?? "", /line 1-15 of 40/);
+      await sendInput(instance, "\u001B[B");
+      assert.match(instance.lastFrame() ?? "", /line 2-16 of 40/);
+
+      await sendInput(instance, "\u001B[<65;1;1M");
+      assert.match(instance.lastFrame() ?? "", /line 5-19 of 40/);
+      await sendInput(instance, "\u001B[<64;1;1M");
+      assert.match(instance.lastFrame() ?? "", /line 2-16 of 40/);
+
+      await sendInput(instance, "\u001B");
+      frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Archived Results · 1 result/);
+      assert.equal(hasAgent(frame, "arch"), true);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("ignores Tab while a detail is open", async () => {
+    const fixture = makeFixture([makeItem("active-one"), makeArchivedItem("arch-one")]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      await sendInput(instance, "\r");
+      await sendInput(instance, "\t");
+      assert.match(instance.lastFrame() ?? "", /Harvest Result · agent-active-one/);
+      assert.doesNotMatch(instance.lastFrame() ?? "", /Archived/);
+
+      await sendInput(instance, "\u001B");
+      let frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Result Inbox · 1 result/);
+      assert.equal(hasAgent(frame, "active-one"), true);
+
+      await sendInput(instance, "\t");
+      await sendInput(instance, "\r");
+      assert.match(instance.lastFrame() ?? "", /Harvest Archived Result · agent-arch-one/);
+
+      await sendInput(instance, "\t");
+      assert.match(instance.lastFrame() ?? "", /Harvest Archived Result · agent-arch-one/);
+
+      await sendInput(instance, "\u001B");
+      frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Archived Results · 1 result/);
+      assert.equal(hasAgent(frame, "arch-one"), true);
     } finally {
       instance.unmount();
     }

@@ -1,7 +1,7 @@
 import { Box, Text } from "ink";
 import React, { type FC } from "react";
 
-import type { InboxItem } from "../app/inbox-service.ts";
+import type { InboxItem, InboxMode } from "../app/inbox-service.ts";
 
 const h = React.createElement;
 
@@ -14,6 +14,7 @@ export interface InboxViewProps {
   items: readonly InboxItem[];
   cursor: number;
   width: number;
+  mode?: InboxMode;
   offset?: number;
   limit?: number;
   status?: StatusMessage | null;
@@ -81,6 +82,7 @@ export const InboxView: FC<InboxViewProps> = ({
   items,
   cursor,
   width,
+  mode = "active",
   offset = 0,
   limit,
   status = null,
@@ -108,33 +110,33 @@ export const InboxView: FC<InboxViewProps> = ({
           ),
         );
 
+  const resultCount = `${items.length} result${items.length === 1 ? "" : "s"}`;
+  const title =
+    mode === "archived"
+      ? `Harvest Archived Results · ${resultCount}`
+      : `Harvest Result Inbox · ${resultCount}`;
+  const subtitle =
+    mode === "archived"
+      ? "Newest archived first; select one to inspect it."
+      : "Unread results stay at the top; select one to inspect it.";
+  const emptyState =
+    mode === "archived"
+      ? "No archived results."
+      : "No results yet. Captured agent output will appear here.";
+  const footer =
+    mode === "archived"
+      ? "↑/↓ or k/j move · PageUp/PageDown page · Enter open · y copy · r restore · Tab active · q/Esc quit"
+      : "↑/↓ or k/j move · PageUp/PageDown page · Enter open · y copy · a archive · Tab archived · q/Esc quit";
+
   return h(
     Box,
     { flexDirection: "column", paddingX: 1 },
-    h(
-      Text,
-      { bold: true, wrap: "truncate" },
-      `Harvest Result Inbox · ${items.length} result${items.length === 1 ? "" : "s"}`,
-    ),
-    h(
-      Text,
-      { dimColor: true, wrap: "truncate" },
-      "Unread results stay at the top; select one to inspect it.",
-    ),
-    items.length > 0
-      ? rows
-      : h(
-          Text,
-          { dimColor: true, wrap: "truncate" },
-          "No results yet. Captured agent output will appear here.",
-        ),
+    h(Text, { bold: true, wrap: "truncate" }, title),
+    h(Text, { dimColor: true, wrap: "truncate" }, subtitle),
+    items.length > 0 ? rows : h(Text, { dimColor: true, wrap: "truncate" }, emptyState),
     metadata,
     statusElement(status),
-    h(
-      Text,
-      { dimColor: true, wrap: "truncate" },
-      "↑/↓ or k/j move · PageUp/PageDown page · Enter open · y copy · a archive · q/Esc quit",
-    ),
+    h(Text, { dimColor: true, wrap: "truncate" }, footer),
   );
 };
 

@@ -1,6 +1,6 @@
 import { useApp, useInput, useStdout } from "ink";
 import React, { type FC, useEffect, useState } from "react";
-import type { InboxDetail, InboxItem, InboxPort } from "../app/inbox-service.ts";
+import type { InboxDetail, InboxItem, InboxMode, InboxPort } from "../app/inbox-service.ts";
 import type { CopyReport } from "../clipboard/provider.ts";
 import { ClipboardError } from "../clipboard/provider.ts";
 import {
@@ -33,7 +33,8 @@ export function createApp(port: InboxPort): FC {
     const { exit } = useApp();
     const { stdout } = useStdout();
     const [view, setView] = useState<View>("inbox");
-    const [items, setItems] = useState<InboxItem[]>(() => port.list());
+    const [mode, setMode] = useState<InboxMode>("active");
+    const [items, setItems] = useState<InboxItem[]>(() => port.list("active"));
     const [position, setPosition] = useState<InboxPosition>({ cursor: 0, listOffset: 0 });
     const [detail, setDetail] = useState<InboxDetail | null>(null);
     const [scrollOffset, setScrollOffset] = useState(0);
@@ -81,8 +82,20 @@ export function createApp(port: InboxPort): FC {
       setPosition((current) => nextInboxPosition(current, nextCursor, itemCount, capacity));
     };
 
+    /**
+     * Collection switches replace the whole list, so the cursor and the list
+     * offset are reset together in one atomic position update, and a status from
+     * the previous collection is cleared.
+     */
+    const switchMode = (next: InboxMode): void => {
+      setMode(next);
+      setItems(port.list(next));
+      setPosition({ cursor: 0, listOffset: 0 });
+      setStatus(null);
+    };
+
     const refreshItems = (hasStatus = status !== null): InboxItem[] => {
-      const nextItems = port.list();
+      const nextItems = port.list(mode);
       const nextCursor = clampCursor(cursor, nextItems.length);
       const nextCapacity = inboxViewportLines(
         stdout.rows,
@@ -147,6 +160,23 @@ export function createApp(port: InboxPort): FC {
       }
     };
 
+    const restore = (id: string, returnToInbox: boolean): void => {
+      try {
+        const applied = port.restore(id);
+        refreshItems(true);
+        if (returnToInbox) {
+          setDetail(null);
+          setView("inbox");
+        }
+        setStatus({
+          text: applied ? `Restored result ${id}.` : `Result ${id} is already active.`,
+          error: false,
+        });
+      } catch (error) {
+        showError(error);
+      }
+    };
+
     const backToInbox = (): void => {
       try {
         refreshItems();
@@ -175,6 +205,12 @@ export function createApp(port: InboxPort): FC {
       }
 
       if (view === "inbox") {
+        // Tab only toggles collections from the inbox, so a detail always
+        // returns to the collection it was opened from.
+        if (key.tab && !key.shift) {
+          switchMode(mode === "active" ? "archived" : "active");
+          return;
+        }
         if (input === "q" || key.escape || input === "\u001b") {
           exit();
           return;
@@ -208,7 +244,7 @@ export function createApp(port: InboxPort): FC {
           }
           return;
         }
-        if (input === "a") {
+        if (input === "a" && mode === "active") {
           const item = items[cursor];
           if (item === undefined) {
             setStatus({ text: "There are no results to archive.", error: true });
@@ -216,6 +252,21 @@ export function createApp(port: InboxPort): FC {
             archive(item.id, false);
           }
         }
+
+        if (input === "r" && mode === "archived") {
+          const item = items[cursor];
+          if (item === undefined) {
+            setStatus({ text: "There are no results to restore.", error: true });
+          } else {
+            restore(item.id, false);
+          }
+        }
+        return;
+      }
+
+      // Tab is deliberately inert while a detail is open, so Esc is always the
+      // way back to the collection the detail came from.
+      if (key.tab) {
         return;
       }
 
@@ -254,8 +305,12 @@ export function createApp(port: InboxPort): FC {
         copy(detail.id, Buffer.byteLength(detail.rawText, "utf8"));
         return;
       }
-      if (input === "a") {
+      if (input === "a" && !detail.archived) {
         archive(detail.id, true);
+        return;
+      }
+      if (input === "r" && detail.archived) {
+        restore(detail.id, true);
       }
     });
 
@@ -274,6 +329,7 @@ export function createApp(port: InboxPort): FC {
       items,
       cursor,
       width: inboxWidth,
+      mode,
       status,
       offset: listOffset,
       limit: inboxCapacity,

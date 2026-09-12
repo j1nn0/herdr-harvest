@@ -36,10 +36,17 @@ export const ResultView: FC<ResultViewProps> = ({ detail, scrollOffset, status =
       ),
     );
 
+  const title = detail.archived
+    ? `Harvest Archived Result · ${detail.agentLabel}`
+    : `Harvest Result · ${detail.agentLabel}`;
+  const footer = detail.archived
+    ? "↑/↓ or k/j scroll · PageUp/PageDown page · y copy · r restore · Esc inbox"
+    : "↑/↓ or k/j scroll · PageUp/PageDown page · y copy · a archive · Esc inbox";
+
   return h(
     Box,
     { flexDirection: "column", paddingX: 1 },
-    h(Text, { bold: true, wrap: "truncate" }, `Harvest Result · ${detail.agentLabel}`),
+    h(Text, { bold: true, wrap: "truncate" }, title),
     h(
       Text,
       { dimColor: true, wrap: "truncate" },
@@ -48,11 +55,7 @@ export const ResultView: FC<ResultViewProps> = ({ detail, scrollOffset, status =
     h(Text, { dimColor: true, wrap: "truncate" }, `line ${start + 1}-${end} of ${lines.length}`),
     h(Box, { flexDirection: "column" }, visibleLines),
     statusElement(status),
-    h(
-      Text,
-      { dimColor: true, wrap: "truncate" },
-      "↑/↓ or k/j scroll · PageUp/PageDown page · y copy · a archive · Esc inbox",
-    ),
+    h(Text, { dimColor: true, wrap: "truncate" }, footer),
   );
 };
 
