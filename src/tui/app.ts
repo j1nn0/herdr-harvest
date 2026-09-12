@@ -19,17 +19,26 @@ const STATUS_DURATION_MS = 4_000;
 
 type View = "inbox" | "result";
 
+/**
+ * Cursor and list offset are one value so every update can derive both from the
+ * latest queued position instead of the closure of the last committed render.
+ */
+interface InboxPosition {
+  cursor: number;
+  listOffset: number;
+}
+
 export function createApp(port: InboxPort): FC {
   const HarvestApp: FC = () => {
     const { exit } = useApp();
     const { stdout } = useStdout();
     const [view, setView] = useState<View>("inbox");
     const [items, setItems] = useState<InboxItem[]>(() => port.list());
-    const [cursor, setCursor] = useState(0);
+    const [position, setPosition] = useState<InboxPosition>({ cursor: 0, listOffset: 0 });
     const [detail, setDetail] = useState<InboxDetail | null>(null);
     const [scrollOffset, setScrollOffset] = useState(0);
-    const [listOffset, setListOffset] = useState(0);
     const [status, setStatus] = useState<StatusMessage | null>(null);
+    const { cursor, listOffset } = position;
     const viewport = resultViewportLines(stdout.rows);
     const columns = stdout.columns;
     const inboxWidth =
@@ -48,20 +57,28 @@ export function createApp(port: InboxPort): FC {
       return () => clearTimeout(timeout);
     }, [status]);
 
+    /**
+     * Relative moves (keys and mouse wheel) derive the next cursor from the
+     * latest queued position, so every report in a batch still applies even
+     * though React has not committed a render in between.
+     */
+    const moveInboxPosition = (delta: number): void => {
+      setPosition((current) =>
+        nextInboxPosition(current, current.cursor + delta, items.length, inboxCapacity),
+      );
+    };
+
+    /**
+     * Absolute placement for refresh paths that already know the next item count
+     * and capacity. Cursor and list offset are still computed together from one
+     * queued state, so the two can never drift apart.
+     */
     const setInboxPosition = (
       nextCursor: number,
       itemCount = items.length,
       capacity = inboxCapacity,
     ): void => {
-      const boundedCursor = clampCursor(nextCursor, itemCount);
-      setCursor(boundedCursor);
-      setListOffset((currentOffset) =>
-        clampListOffset(
-          listOffsetForCursor(boundedCursor, currentOffset, capacity),
-          itemCount,
-          capacity,
-        ),
-      );
+      setPosition((current) => nextInboxPosition(current, nextCursor, itemCount, capacity));
     };
 
     const refreshItems = (hasStatus = status !== null): InboxItem[] => {
@@ -148,7 +165,7 @@ export function createApp(port: InboxPort): FC {
       if (wheel !== null) {
         const step = wheel === "up" ? -WHEEL_STEP : WHEEL_STEP;
         if (view === "inbox") {
-          setInboxPosition(cursor + step);
+          moveInboxPosition(step);
         } else if (detail !== null) {
           setScrollOffset((current) =>
             clampScroll(current + step, detail.rawText.split("\n").length, viewport),
@@ -163,19 +180,19 @@ export function createApp(port: InboxPort): FC {
           return;
         }
         if (key.upArrow || input === "k") {
-          setInboxPosition(cursor - 1);
+          moveInboxPosition(-1);
           return;
         }
         if (key.downArrow || input === "j") {
-          setInboxPosition(cursor + 1);
+          moveInboxPosition(1);
           return;
         }
         if (key.pageUp) {
-          setInboxPosition(cursor - inboxPageStep);
+          moveInboxPosition(-inboxPageStep);
           return;
         }
         if (key.pageDown) {
-          setInboxPosition(cursor + inboxPageStep);
+          moveInboxPosition(inboxPageStep);
           return;
         }
         if (key.return || input === "\r") {
@@ -304,6 +321,29 @@ function clampCursor(cursor: number, itemCount: number): number {
     return 0;
   }
   return Math.min(Math.max(0, cursor), itemCount - 1);
+}
+
+/**
+ * Bounded cursor plus the list offset that keeps it visible, both derived from
+ * the same queued position. Returning the current value when nothing moved lets
+ * React skip a re-render, as the previous pair of state setters did.
+ */
+function nextInboxPosition(
+  current: InboxPosition,
+  nextCursor: number,
+  itemCount: number,
+  capacity: number,
+): InboxPosition {
+  const cursor = clampCursor(nextCursor, itemCount);
+  const listOffset = clampListOffset(
+    listOffsetForCursor(cursor, current.listOffset, capacity),
+    itemCount,
+    capacity,
+  );
+  if (cursor === current.cursor && listOffset === current.listOffset) {
+    return current;
+  }
+  return { cursor, listOffset };
 }
 
 function clampScroll(offset: number, lineCount: number, viewport: number): number {

@@ -586,3 +586,126 @@ describe("wheel reports split across stdin writes", () => {
     }
   });
 });
+
+/**
+ * Queue every input in one synchronous block (no tick between writes), so Ink
+ * delivers them to `useInput` before React commits a render, then open the
+ * selected result and report which row it was.
+ */
+async function openedAfterQueuedInputs(
+  items: InboxItem[],
+  inputs: readonly string[],
+): Promise<string | undefined> {
+  const fixture = makeFixture(items);
+  const instance = render(h(createApp(fixture.port)));
+  try {
+    for (const input of inputs) {
+      instance.stdin.write(input);
+    }
+    await tick();
+    await sendInput(instance, "\r");
+    return fixture.calls.opened[0];
+  } finally {
+    instance.unmount();
+  }
+}
+
+/**
+ * Several reports can reach `useInput` before React commits a render: whenever
+ * two or more land in one stdin chunk, and whenever the terminal delivers a
+ * burst faster than React flushes. Each queued report still has to move the
+ * selection once, which means the position must derive from the latest queued
+ * state rather than from the closure of the last render.
+ */
+describe("inbox position batching", () => {
+  test("applies every queued wheel report once", async () => {
+    const items = makeItems(12);
+
+    assert.equal(await openedAfterQueuedInputs(items, [WHEEL_DOWN, WHEEL_DOWN]), items[6]?.id);
+    assert.equal(
+      await openedAfterQueuedInputs(items, [WHEEL_DOWN, WHEEL_DOWN, WHEEL_DOWN]),
+      items[9]?.id,
+    );
+  });
+
+  test("lets a queued wheel-down and wheel-up cancel out", async () => {
+    const items = makeItems(12);
+
+    assert.equal(await openedAfterQueuedInputs(items, [WHEEL_DOWN, WHEEL_UP]), items[0]?.id);
+  });
+
+  test("composes queued wheel and arrow-key moves", async () => {
+    const items = makeItems(12);
+
+    assert.equal(
+      await openedAfterQueuedInputs(items, [WHEEL_DOWN, "\u001B[B"]),
+      items[4]?.id,
+      "wheel-down then arrow-down",
+    );
+    assert.equal(
+      await openedAfterQueuedInputs(items, ["\u001B[B", WHEEL_DOWN]),
+      items[4]?.id,
+      "arrow-down then wheel-down",
+    );
+    assert.equal(
+      await openedAfterQueuedInputs(items, ["j", "j"]),
+      items[2]?.id,
+      "two vi-style moves",
+    );
+  });
+
+  test("clamps a queued burst at both ends", async () => {
+    const items = makeItems(12);
+
+    assert.equal(
+      await openedAfterQueuedInputs(
+        items,
+        Array.from({ length: 5 }, () => WHEEL_DOWN),
+      ),
+      items[11]?.id,
+      "clamped at the last result",
+    );
+    assert.equal(
+      await openedAfterQueuedInputs(items, [WHEEL_UP, WHEEL_UP, WHEEL_UP]),
+      items[0]?.id,
+      "clamped at the first result",
+    );
+  });
+
+  test("applies a concatenated single-write burst report by report", async () => {
+    const items = makeItems(12);
+
+    // Ink's input parser splits concatenated SGR reports into separate keypresses.
+    assert.equal(await openedAfterQueuedInputs(items, [WHEEL_DOWN + WHEEL_DOWN]), items[6]?.id);
+    assert.equal(
+      await openedAfterQueuedInputs(items, [WHEEL_DOWN + WHEEL_DOWN + WHEEL_DOWN + WHEEL_DOWN]),
+      items[11]?.id,
+      "four reports clamp at the last result",
+    );
+  });
+
+  test("keeps the selected row visible after a queued jump in a small terminal", async () => {
+    const items = makeItems(30);
+    const fixture = makeFixture(items);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      setTerminalSize(instance, 80, 10);
+      // One committed move lets the app adopt the smaller viewport before the burst.
+      await sendInput(instance, "j");
+      instance.stdin.write(WHEEL_DOWN);
+      instance.stdin.write(WHEEL_DOWN);
+      instance.stdin.write(WHEEL_DOWN);
+      instance.stdin.write(WHEEL_DOWN);
+      await tick();
+
+      const frame = instance.lastFrame() ?? "";
+      assert.equal(hasAgent(frame, "item-13"), true);
+      assert.equal(hasAgent(frame, "item-00"), false);
+
+      await sendInput(instance, "\r");
+      assert.deepEqual(fixture.calls.opened, ["item-13"]);
+    } finally {
+      instance.unmount();
+    }
+  });
+});
