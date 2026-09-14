@@ -2,16 +2,50 @@ import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 
 import { contentHash, dedupKey } from "../domain/dedup.ts";
+import type { OrchestrationClaim, OrchestrationRole } from "../domain/orchestration.ts";
+import {
+  isOrchestrationId,
+  isOrchestrationLabel,
+  isOrchestrationRole,
+  MAX_ORCHESTRATION_LABEL_CODE_POINTS,
+} from "../domain/orchestration.ts";
 import type { AgentSessionKind, CaptureInput, HarvestResult } from "../domain/result.ts";
 import { withTransaction } from "./database.ts";
 import { runMigrations } from "./migrations.ts";
 
+/** How a requested orchestration claim landed on the stored row. */
+export type InsertClaimOutcome =
+  | { status: "claimed"; orchestrationId: string }
+  | { status: "already_claimed"; orchestrationId: string }
+  | { status: "conflict"; requestedOrchestrationId: string; existingOrchestrationId: string };
+
 export type InsertOutcome =
-  | { status: "inserted"; result: HarvestResult }
-  | { status: "duplicate"; result: HarvestResult };
+  | { status: "inserted"; result: HarvestResult; claim?: InsertClaimOutcome }
+  | { status: "duplicate"; result: HarvestResult; claim?: InsertClaimOutcome };
+
+/** The result of claiming one already-stored row. */
+export type ClaimOutcome =
+  | { status: "claimed"; result: HarvestResult }
+  | { status: "already_claimed"; result: HarvestResult }
+  | {
+      status: "conflict";
+      result: HarvestResult;
+      requestedOrchestrationId: string;
+      existingOrchestrationId: string;
+    }
+  | { status: "not_found" };
 
 export interface ResultStore {
-  insert(input: CaptureInput): InsertOutcome;
+  /**
+   * Records one capture, and optionally claims the surviving row for an
+   * orchestration task in the same transaction. A claim is written only while
+   * `orchestration_id IS NULL`, so an automatic capture can never overwrite an
+   * explicit claim and a repeated claim is idempotent rather than destructive.
+   * `claim` must already be validated (`RangeError` otherwise).
+   */
+  insert(input: CaptureInput, claim?: OrchestrationClaim): InsertOutcome;
+  /** Claims one already-stored row for an orchestration task. */
+  claimOrchestration(id: string, claim: OrchestrationClaim): ClaimOutcome;
   observePaneStatus(input: {
     herdrSessionKey: string | null;
     paneId: string;
@@ -53,6 +87,13 @@ type InsertParams = [
 
 const SELECT_BY_ID = "SELECT * FROM results WHERE id = ?";
 const SELECT_BY_DEDUP_KEY = "SELECT * FROM results WHERE dedup_key = ?";
+/**
+ * First-writer-wins: the guard keeps an existing claim intact, so a competing
+ * claim can only ever read the winner back and report an idempotent claim or a
+ * conflict.
+ */
+const CLAIM_ORCHESTRATION =
+  "UPDATE results SET orchestration_id = ?, orchestration_label = ?, orchestration_role = ? WHERE id = ? AND orchestration_id IS NULL";
 
 export class SqliteResultStore implements ResultStore {
   private readonly db: DatabaseSync;
@@ -62,7 +103,10 @@ export class SqliteResultStore implements ResultStore {
     runMigrations(db);
   }
 
-  insert(input: CaptureInput): InsertOutcome {
+  insert(input: CaptureInput, claim?: OrchestrationClaim): InsertOutcome {
+    if (claim !== undefined) {
+      assertValidOrchestrationClaim(claim);
+    }
     const rawContentHash = contentHash(input.rawText);
     const key = dedupKey(input, rawContentHash);
     const id = randomUUID();
@@ -113,17 +157,104 @@ export class SqliteResultStore implements ResultStore {
           ON CONFLICT(dedup_key) DO NOTHING
         `)
         .run(...params);
-      const row = this.db.prepare(SELECT_BY_DEDUP_KEY).get(key) as SqlRow | undefined;
+      let row = this.db.prepare(SELECT_BY_DEDUP_KEY).get(key) as SqlRow | undefined;
       if (row === undefined) {
         throw new Error(`Inserted result ${id} could not be read back.`);
       }
 
-      return { inserted: changes.changes > 0, row };
+      // The claim belongs to the surviving row, which on a duplicate is the row
+      // that already owns this content, not the id generated for this attempt.
+      let claimed: InsertClaimOutcome | undefined;
+      if (claim !== undefined) {
+        const survivingId = row.id;
+        if (typeof survivingId !== "string") {
+          throw new Error(`Inserted result ${id} could not be read back.`);
+        }
+        claimed = this.applyClaim(survivingId, claim);
+        row = this.db.prepare(SELECT_BY_DEDUP_KEY).get(key) as SqlRow | undefined;
+        if (row === undefined) {
+          throw new Error(`Claimed result ${survivingId} could not be read back.`);
+        }
+      }
+
+      return { inserted: changes.changes > 0, row, claimed };
     });
 
+    const result = mapRow(transaction.row);
+    if (transaction.inserted) {
+      return transaction.claimed === undefined
+        ? { status: "inserted", result }
+        : { status: "inserted", result, claim: transaction.claimed };
+    }
+    return transaction.claimed === undefined
+      ? { status: "duplicate", result }
+      : { status: "duplicate", result, claim: transaction.claimed };
+  }
+
+  claimOrchestration(id: string, claim: OrchestrationClaim): ClaimOutcome {
+    assertValidOrchestrationClaim(claim);
+    return withTransaction(this.db, () => {
+      if (this.rowById(id) === undefined) {
+        return { status: "not_found" };
+      }
+
+      const applied = this.applyClaim(id, claim);
+      const row = this.rowById(id);
+      if (row === undefined) {
+        return { status: "not_found" };
+      }
+      const result = mapRow(row);
+
+      if (applied.status === "conflict") {
+        return {
+          status: "conflict",
+          result,
+          requestedOrchestrationId: applied.requestedOrchestrationId,
+          existingOrchestrationId: applied.existingOrchestrationId,
+        };
+      }
+      if (applied.status === "claimed") {
+        return { status: "claimed", result };
+      }
+      return { status: "already_claimed", result };
+    });
+  }
+
+  /**
+   * Applies one NULL-guarded claim and classifies what it found. Callers must
+   * hold the write transaction: the read-back that classifies a lost race is
+   * only trustworthy while no other writer can slip in between.
+   */
+  private applyClaim(id: string, claim: OrchestrationClaim): InsertClaimOutcome {
+    const changes = this.db.prepare(CLAIM_ORCHESTRATION).run(claim.id, claim.label, claim.role, id);
+    if (changes.changes > 0) {
+      return { status: "claimed", orchestrationId: claim.id };
+    }
+
+    const row = this.rowById(id);
+    if (row === undefined) {
+      throw new Error(`Result ${id} disappeared before its orchestration claim could be resolved.`);
+    }
+    const existing = mapRow(row);
+    if (
+      existing.orchestrationId === null ||
+      existing.orchestrationLabel === null ||
+      existing.orchestrationRole === null
+    ) {
+      throw new Error(`Result ${id} has an incomplete orchestration claim.`);
+    }
+
+    if (
+      existing.orchestrationId === claim.id &&
+      existing.orchestrationLabel === claim.label &&
+      existing.orchestrationRole === claim.role
+    ) {
+      return { status: "already_claimed", orchestrationId: existing.orchestrationId };
+    }
     return {
-      status: transaction.inserted ? "inserted" : "duplicate",
-      result: mapRow(transaction.row),
+      status: "conflict",
+      requestedOrchestrationId: claim.id,
+      existingOrchestrationId: existing.orchestrationId,
     };
   }
 
@@ -258,7 +389,24 @@ function mapRow(row: SqlRow): HarvestResult {
     dedupKey: row.dedup_key as string,
     readAtMs: row.read_at_ms as number | null,
     archivedAtMs: row.archived_at_ms as number | null,
+    orchestrationId: row.orchestration_id as string | null,
+    orchestrationLabel: row.orchestration_label as string | null,
+    orchestrationRole: row.orchestration_role as OrchestrationRole | null,
   };
+}
+
+function assertValidOrchestrationClaim(claim: OrchestrationClaim): void {
+  if (!isOrchestrationId(claim.id)) {
+    throw new RangeError("An orchestration claim id must be a canonical lowercase UUIDv4.");
+  }
+  if (!isOrchestrationRole(claim.role)) {
+    throw new RangeError("An orchestration claim role must be explorer or fixer.");
+  }
+  if (!isOrchestrationLabel(claim.label)) {
+    throw new RangeError(
+      `An orchestration claim label must be 1-${MAX_ORCHESTRATION_LABEL_CODE_POINTS} non-blank code points.`,
+    );
+  }
 }
 
 function assertValidListLimit(limit: number | undefined): void {

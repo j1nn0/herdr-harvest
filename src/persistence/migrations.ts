@@ -66,10 +66,29 @@ const createPaneLifecycle: Migration = {
   },
 };
 
+/**
+ * Explicit orchestration claims. Existing rows keep NULL claims: a claim is
+ * never backfilled, because only the caller that recorded the capture knows
+ * which task it belonged to.
+ */
+const addOrchestrationClaim: Migration = {
+  version: 4,
+  name: "add-orchestration-claim",
+  up(db) {
+    db.exec(`
+      ALTER TABLE results ADD COLUMN orchestration_id    TEXT;
+      ALTER TABLE results ADD COLUMN orchestration_label TEXT;
+      ALTER TABLE results ADD COLUMN orchestration_role  TEXT;
+      CREATE INDEX results_orchestration_id ON results (orchestration_id);
+    `);
+  },
+};
+
 export const MIGRATIONS: readonly Migration[] = [
   createResults,
   addHerdrSession,
   createPaneLifecycle,
+  addOrchestrationClaim,
 ];
 
 export function runMigrations(db: DatabaseSync): { from: number; to: number; applied: string[] } {

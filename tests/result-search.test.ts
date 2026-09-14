@@ -30,6 +30,9 @@ function makeResult(overrides: Partial<HarvestResult> = {}): HarvestResult {
     dedupKey: "zzdedupkey",
     readAtMs: null,
     archivedAtMs: null,
+    orchestrationId: null,
+    orchestrationLabel: null,
+    orchestrationRole: null,
     ...overrides,
   };
 }

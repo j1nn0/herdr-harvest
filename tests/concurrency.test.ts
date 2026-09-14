@@ -81,6 +81,70 @@ describe("concurrent completion events across processes", () => {
       rmSync(directory, { recursive: true, force: true });
     }
   });
+  test("racing claims elect exactly one orchestration winner", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "herdr-harvest-claim-race-"));
+    const databasePath = join(directory, "harvest.db");
+    const firstId = "2f6a3c1e-8b1d-4a30-9a4f-5b1c2d3e4f50";
+    const secondId = "7c9e1d2a-3b4c-4d5e-8f90-a1b2c3d4e5f6";
+    try {
+      const runs = await Promise.all(
+        Array.from({ length: 6 }, (_, index) =>
+          execFileAsync(
+            process.execPath,
+            [worker, databasePath, "0", index % 2 === 0 ? firstId : secondId],
+            { encoding: "utf8" },
+          ),
+        ),
+      );
+
+      const statuses = runs.map((run) => run.stdout.trim());
+      assert.equal(statuses.length, 6);
+      // One writer wins the NULL-guarded claim; everyone else reads the winner
+      // back and reports either an idempotent claim or a conflict, never a
+      // second claim and never a lost row.
+      assert.equal(
+        statuses.filter((status) => status === "inserted:claimed").length,
+        1,
+        `expected exactly one claim, got ${JSON.stringify(statuses)}`,
+      );
+      assert.equal(
+        statuses.filter((status) => status.endsWith(":claimed")).length,
+        1,
+        JSON.stringify(statuses),
+      );
+      for (const status of statuses) {
+        assert.match(status, /^(inserted|duplicate):(claimed|already_claimed|conflict)$/);
+      }
+
+      const store = new SqliteResultStore(openDatabase(databasePath));
+      try {
+        const rows = store.list({ includeArchived: true });
+        assert.equal(rows.length, 1);
+        const storedId = rows[0]?.orchestrationId;
+        assert.ok(
+          storedId === firstId || storedId === secondId,
+          `unexpected stored claim ${String(storedId)}`,
+        );
+        // Whatever the winner is, its two same-id peers see an idempotent claim
+        // and the three workers carrying the other id see a conflict.
+        assert.equal(
+          statuses.filter((status) => status === "duplicate:already_claimed").length,
+          2,
+          JSON.stringify(statuses),
+        );
+        assert.equal(
+          statuses.filter((status) => status === "duplicate:conflict").length,
+          3,
+          JSON.stringify(statuses),
+        );
+      } finally {
+        store.close();
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   test("racing first opens migrate fresh databases atomically", async () => {
     const latest = MIGRATIONS[MIGRATIONS.length - 1];
     if (latest === undefined) {

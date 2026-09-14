@@ -1,17 +1,30 @@
 import type { HerdrClient, ReadOptions } from "@j1nn0/herdr-plugin-sdk";
 import { isHerdrCliError } from "@j1nn0/herdr-plugin-sdk";
 import type { HarvestConfig } from "../config/config.ts";
+import type { OrchestrationClaim } from "../domain/orchestration.ts";
 import type { CaptureInput, HarvestResult } from "../domain/result.ts";
 import { getAgentInfo, getPaneInfo } from "../herdr/lookup.ts";
 import type { HerdrTargetInfo } from "../herdr/types.ts";
-import type { ResultStore } from "../persistence/result-store.ts";
+import type { InsertClaimOutcome, ResultStore } from "../persistence/result-store.ts";
 import { CaptureReadError } from "./errors.ts";
 
 export type CaptureOutcome =
-  | { status: "captured"; result: HarvestResult }
-  | { status: "duplicate"; result: HarvestResult }
+  | { status: "captured"; result: HarvestResult; orchestration?: OrchestrationCaptureReport }
+  | { status: "duplicate"; result: HarvestResult; orchestration?: OrchestrationCaptureReport }
+  | {
+      status: "conflict";
+      result: HarvestResult;
+      requestedOrchestrationId: string;
+      existingOrchestrationId: string;
+    }
   | { status: "skipped"; reason: string }
   | { status: "failed"; reason: string };
+
+/** How an explicitly requested orchestration claim landed on the stored result. */
+export type OrchestrationCaptureReport = {
+  status: "claimed" | "already_claimed";
+  id: string;
+};
 
 export interface CaptureDeps {
   client: HerdrClient;
@@ -24,6 +37,11 @@ export interface CaptureRequest {
   paneId: string;
   workspaceIdHint?: string | null;
   agentKindHint?: string | null;
+  /**
+   * The explicit orchestration claim for this capture. Automatic hooks never
+   * set it, so an automatic capture can never invent or overwrite a claim.
+   */
+  orchestration?: OrchestrationClaim;
 }
 
 export async function captureCompletion(
@@ -75,15 +93,47 @@ export async function captureCompletion(
       captureLineCount: deps.config.captureLines,
       rawText,
     };
-    const inserted = deps.store.insert(input);
+    const inserted = deps.store.insert(input, request.orchestration);
 
     if (inserted.status === "inserted") {
-      return { status: "captured", result: inserted.result };
+      return outcomeFor("captured", inserted.result, inserted.claim);
     }
-    return { status: "duplicate", result: inserted.result };
+    return outcomeFor("duplicate", inserted.result, inserted.claim);
   } catch (error) {
     return { status: "failed", reason: `capture failed: ${errorMessage(error)}` };
   }
+}
+
+/**
+ * Attaches the claim result to a successful capture. A lost race is reported as
+ * a conflict instead of a capture, because the stored row now belongs to
+ * another orchestration task and this capture must not pretend otherwise.
+ */
+function outcomeFor(
+  kind: "captured" | "duplicate",
+  result: HarvestResult,
+  claim: InsertClaimOutcome | undefined,
+): CaptureOutcome {
+  if (claim?.status === "conflict") {
+    return {
+      status: "conflict",
+      result,
+      requestedOrchestrationId: claim.requestedOrchestrationId,
+      existingOrchestrationId: claim.existingOrchestrationId,
+    };
+  }
+
+  const orchestration: OrchestrationCaptureReport | undefined =
+    claim === undefined ? undefined : { status: claim.status, id: claim.orchestrationId };
+
+  if (kind === "captured") {
+    return orchestration === undefined
+      ? { status: "captured", result }
+      : { status: "captured", result, orchestration };
+  }
+  return orchestration === undefined
+    ? { status: "duplicate", result }
+    : { status: "duplicate", result, orchestration };
 }
 
 async function resolveMetadata(

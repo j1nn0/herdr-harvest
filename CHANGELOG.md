@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Added explicit orchestration claims to the manual capture entrypoint: `--orchestration-id`, `--orchestration-label`, and `--orchestration-role` attach an explorer or fixer task to a captured result with first-writer-wins semantics, alongside a `--capabilities` probe for integration discovery.
+
 ## [0.3.0] - 2026-09-14
 
 ### Added

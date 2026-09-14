@@ -33,6 +33,10 @@ describe("hook entrypoint", () => {
       assert.equal(summary(second.stdout).reason, "ignored duplicate done after done");
       assert.equal(readRows(fixture.stateDirectory).length, 1);
       assert.equal(readRows(fixture.stateDirectory)[0]?.rawText, "stub output\n\n世界 🚀  \n");
+      // The automatic hook never infers an orchestration claim.
+      assert.equal(readRows(fixture.stateDirectory)[0]?.orchestrationId, null);
+      assert.equal(readRows(fixture.stateDirectory)[0]?.orchestrationLabel, null);
+      assert.equal(readRows(fixture.stateDirectory)[0]?.orchestrationRole, null);
     } finally {
       fixture.cleanup();
     }
@@ -204,6 +208,212 @@ describe("capture entrypoint", () => {
       fixture.cleanup();
     }
   });
+
+  test("captures without a claim through the legacy pane option", async () => {
+    const fixture = makeFixture();
+
+    try {
+      const result = await runCaptureEntrypoint(fixture.env, ["--pane", "w1G:p1"]);
+
+      assert.equal(result.exitCode, 0);
+      const summary = summaryOf(result.stdout);
+      assert.deepEqual(Object.keys(summary), ["status", "paneId", "id"]);
+      assert.equal(summary.status, "captured");
+      assert.equal(summary.paneId, "w1G:p1");
+      assert.equal(typeof summary.id, "string");
+
+      const rows = readRows(fixture.stateDirectory);
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0]?.orchestrationId, null);
+      assert.equal(rows[0]?.orchestrationLabel, null);
+      assert.equal(rows[0]?.orchestrationRole, null);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test("claims a capture through the orchestration options", async () => {
+    const fixture = makeFixture();
+
+    try {
+      const result = await runCaptureEntrypoint(fixture.env, claimArgs(CLAIM_ID));
+
+      assert.equal(result.exitCode, 0);
+      const summary = summaryOf(result.stdout);
+      assert.deepEqual(Object.keys(summary), ["status", "paneId", "id", "orchestration"]);
+      assert.equal(summary.status, "captured");
+      assert.deepEqual(summary.orchestration, { status: "claimed", id: CLAIM_ID });
+
+      const rows = readRows(fixture.stateDirectory);
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0]?.orchestrationId, CLAIM_ID);
+      assert.equal(rows[0]?.orchestrationLabel, "探索: fix the parser");
+      assert.equal(rows[0]?.orchestrationRole, "explorer");
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test("reports an idempotent claim when the same claim runs twice", async () => {
+    const fixture = makeFixture();
+
+    try {
+      await runCaptureEntrypoint(fixture.env, claimArgs(CLAIM_ID));
+      const second = await runCaptureEntrypoint(fixture.env, claimArgs(CLAIM_ID));
+
+      assert.equal(second.exitCode, 0);
+      const summary = summaryOf(second.stdout);
+      assert.equal(summary.status, "duplicate");
+      assert.deepEqual(summary.orchestration, { status: "already_claimed", id: CLAIM_ID });
+      assert.equal(readRows(fixture.stateDirectory).length, 1);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test("exits three on an orchestration conflict", async () => {
+    const fixture = makeFixture();
+
+    try {
+      await runCaptureEntrypoint(fixture.env, claimArgs(CLAIM_ID));
+      const conflict = await runCaptureEntrypoint(fixture.env, claimArgs(RIVAL_ID));
+
+      assert.equal(conflict.exitCode, 3);
+      const summary = summaryOf(conflict.stdout);
+      assert.deepEqual(Object.keys(summary), [
+        "status",
+        "paneId",
+        "id",
+        "requestedOrchestrationId",
+        "existingOrchestrationId",
+      ]);
+      assert.equal(summary.status, "conflict");
+      assert.equal(summary.requestedOrchestrationId, RIVAL_ID);
+      assert.equal(summary.existingOrchestrationId, CLAIM_ID);
+      assert.doesNotMatch(conflict.stdout, /stub output/);
+
+      const rows = readRows(fixture.stateDirectory);
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0]?.orchestrationId, CLAIM_ID);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test("rejects a partial claim without capturing", async () => {
+    const fixture = makeFixture();
+
+    try {
+      const result = await runCaptureEntrypoint(fixture.env, [
+        "--pane",
+        "w1G:p1",
+        "--orchestration-id",
+        CLAIM_ID,
+      ]);
+
+      assert.equal(result.exitCode, 2);
+      assert.equal(result.stdout, "");
+      assert.match(result.stderr, /orchestration claim needs/i);
+      assert.equal(readRows(fixture.stateDirectory).length, 0);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test("rejects a malformed claim id or role", async () => {
+    const fixture = makeFixture();
+
+    try {
+      const badId = await runCaptureEntrypoint(fixture.env, claimArgs("orch_7f3a"));
+      assert.equal(badId.exitCode, 2);
+      assert.match(badId.stderr, /canonical lowercase UUIDv4/);
+
+      const badRole = await runCaptureEntrypoint(fixture.env, [
+        "--pane",
+        "w1G:p1",
+        "--orchestration-id",
+        CLAIM_ID,
+        "--orchestration-label",
+        "Task",
+        "--orchestration-role",
+        "Explorer",
+      ]);
+      assert.equal(badRole.exitCode, 2);
+      assert.match(badRole.stderr, /must be one of explorer, fixer/);
+
+      assert.equal(readRows(fixture.stateDirectory).length, 0);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test("preserves a Unicode label through the command line", async () => {
+    const fixture = makeFixture();
+
+    try {
+      const label = "  探索 🔍 — 修正  ";
+      const result = await runCaptureEntrypoint(fixture.env, [
+        "--pane",
+        "w1G:p1",
+        "--orchestration-id",
+        CLAIM_ID,
+        "--orchestration-label",
+        label,
+        "--orchestration-role",
+        "explorer",
+      ]);
+
+      assert.equal(result.exitCode, 0);
+      const stored = readRows(fixture.stateDirectory)[0]?.orchestrationLabel ?? "";
+      assert.equal(stored, label);
+      assert.deepEqual([...stored], [...label]);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test("exits one and writes no row when a claimed capture fails", async () => {
+    const fixture = makeFixture();
+
+    try {
+      const result = await runCaptureEntrypoint(
+        { ...fixture.env, STUB_FAIL_READ: "1" },
+        claimArgs(CLAIM_ID),
+      );
+
+      assert.equal(result.exitCode, 1);
+      assert.equal(summaryOf(result.stdout).status, "failed");
+      assert.equal(readRows(fixture.stateDirectory).length, 0);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+});
+
+describe("capture capabilities", () => {
+  test("prints help without any environment", async () => {
+    const result = await runCaptureEntrypoint({}, ["--help"]);
+
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stderr, "");
+    assert.match(result.stdout, /node src\/bin\/capture\.ts --capabilities/);
+    assert.match(result.stdout, /--orchestration-id <uuid>/);
+    assert.match(result.stdout, /Exit codes:/);
+  });
+
+  test("answers a capability probe with one JSON line and no environment", async () => {
+    const result = await runCaptureEntrypoint({}, ["--capabilities"]);
+
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stderr, "");
+    assert.equal(result.stdout.trimEnd().split("\n").length, 1);
+    assert.deepEqual(JSON.parse(result.stdout), {
+      protocol: "harvest-capture",
+      protocolVersion: 1,
+      features: ["orchestration-claim"],
+      roles: ["explorer", "fixer"],
+    });
+  });
 });
 
 interface HookRun {
@@ -217,6 +427,9 @@ interface HookSummary {
   paneId: string;
   id?: string;
   reason?: string;
+  requestedOrchestrationId?: string;
+  existingOrchestrationId?: string;
+  orchestration?: { status: string; id: string };
 }
 
 interface Fixture {
@@ -252,9 +465,12 @@ async function runHook(env: NodeJS.ProcessEnv): Promise<HookRun> {
   }
 }
 
-async function runCaptureEntrypoint(env: NodeJS.ProcessEnv): Promise<HookRun> {
+async function runCaptureEntrypoint(
+  env: NodeJS.ProcessEnv,
+  args: readonly string[] = [],
+): Promise<HookRun> {
   try {
-    const result = await execFileAsync(process.execPath, ["src/bin/capture.ts"], {
+    const result = await execFileAsync(process.execPath, ["src/bin/capture.ts", ...args], {
       cwd: REPOSITORY_ROOT,
       encoding: "utf8",
       env,
@@ -335,6 +551,28 @@ function readRows(stateDirectory: string) {
 function summary(stdout: string): HookSummary {
   return JSON.parse(stdout.trim()) as HookSummary;
 }
+
+/** Parses one capture entrypoint summary line. */
+function summaryOf(stdout: string): HookSummary {
+  return summary(stdout);
+}
+
+/** The claim options every orchestration entrypoint test uses. */
+function claimArgs(orchestrationId: string): string[] {
+  return [
+    "--pane",
+    "w1G:p1",
+    "--orchestration-id",
+    orchestrationId,
+    "--orchestration-label",
+    "探索: fix the parser",
+    "--orchestration-role",
+    "explorer",
+  ];
+}
+
+const CLAIM_ID = "2f6a3c1e-8b1d-4a30-9a4f-5b1c2d3e4f50";
+const RIVAL_ID = "7c9e1d2a-3b4c-4d5e-8f90-a1b2c3d4e5f6";
 
 function doneEvent(): string {
   return eventWithStatus("done");

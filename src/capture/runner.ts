@@ -1,6 +1,7 @@
 import { createHerdrClient } from "@j1nn0/herdr-plugin-sdk";
 import type { HarvestConfig } from "../config/config.ts";
 import { loadConfig } from "../config/config.ts";
+import type { OrchestrationClaim } from "../domain/orchestration.ts";
 import { openDatabase } from "../persistence/database.ts";
 import type { ResultStore } from "../persistence/result-store.ts";
 import { SqliteResultStore } from "../persistence/result-store.ts";
@@ -11,6 +12,8 @@ import { captureCompletion } from "./orchestrator.ts";
 export interface CaptureRunOptions {
   workspaceIdHint?: string | null;
   agentKindHint?: string | null;
+  /** Explicit orchestration claim for this capture; omitted by the automatic trigger. */
+  orchestration?: OrchestrationClaim;
   now?: () => number;
   lifecycle?: {
     agentStatus: string;
@@ -62,6 +65,7 @@ export async function runCapture(
         paneId,
         workspaceIdHint: extra.workspaceIdHint,
         agentKindHint: extra.agentKindHint,
+        orchestration: extra.orchestration,
       },
     );
     return { outcome, warnings };

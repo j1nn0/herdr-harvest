@@ -1,5 +1,7 @@
 export type AgentSessionKind = "id" | "path";
 
+import type { OrchestrationRole } from "./orchestration.ts";
+
 /** Everything known about a completion at capture time, before persistence. */
 export interface CaptureInput {
   capturedAtMs: number;
@@ -26,6 +28,15 @@ export interface HarvestResult extends CaptureInput {
   dedupKey: string;
   readAtMs: number | null;
   archivedAtMs: number | null;
+  /**
+   * The explicit orchestration claim recorded with the capture, or null when
+   * the result was captured without one. Automatic hooks never infer a claim
+   * from pane metadata, so an unclaimed result stays null until an explicit
+   * claim arrives, and a recorded claim is never overwritten.
+   */
+  orchestrationId: string | null;
+  orchestrationLabel: string | null;
+  orchestrationRole: OrchestrationRole | null;
 }
 
 export function preview(rawText: string, maxChars = 120): string {

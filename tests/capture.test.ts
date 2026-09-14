@@ -11,6 +11,7 @@ import {
 import type { CaptureDeps, CaptureOutcome } from "../src/capture/orchestrator.ts";
 import { captureCompletion } from "../src/capture/orchestrator.ts";
 import type { HarvestConfig } from "../src/config/config.ts";
+import type { OrchestrationClaim } from "../src/domain/orchestration.ts";
 import type { HarvestResult } from "../src/domain/result.ts";
 import { openDatabase } from "../src/persistence/database.ts";
 import { SqliteResultStore } from "../src/persistence/result-store.ts";
@@ -424,12 +425,142 @@ describe("captureCompletion", () => {
       close();
     }
   });
+
+  test("claims a fresh capture for an orchestration task", async () => {
+    const client = createMockHerdrClient({
+      agents: { "w1G:p1": AGENT_INFO },
+      agentReads: { "w1G:p1": "claimed output" },
+    });
+    const { store, close } = makeStore();
+
+    try {
+      const outcome = await runCapture(client, store, "w1G:p1", CLAIM);
+      assert.equal(outcome.status, "captured");
+      if (outcome.status !== "captured") {
+        throw new Error("Expected a captured outcome.");
+      }
+      assert.deepEqual(outcome.orchestration, { status: "claimed", id: CLAIM.id });
+      assert.equal(outcome.result.orchestrationId, CLAIM.id);
+      assert.equal(outcome.result.orchestrationLabel, CLAIM.label);
+      assert.equal(outcome.result.orchestrationRole, CLAIM.role);
+    } finally {
+      close();
+    }
+  });
+
+  test("reports an idempotent claim when the same capture repeats", async () => {
+    const client = createMockHerdrClient({
+      agents: { "w1G:p1": AGENT_INFO },
+      agentReads: { "w1G:p1": "claimed output" },
+    });
+    const { store, close } = makeStore();
+
+    try {
+      const first = await runCapture(client, store, "w1G:p1", CLAIM);
+      const second = await runCapture(client, store, "w1G:p1", CLAIM);
+
+      assert.equal(first.status, "captured");
+      assert.equal(second.status, "duplicate");
+      if (second.status !== "duplicate") {
+        throw new Error("Expected a duplicate outcome.");
+      }
+      assert.deepEqual(second.orchestration, { status: "already_claimed", id: CLAIM.id });
+      assert.equal(store.list({ includeArchived: true }).length, 1);
+    } finally {
+      close();
+    }
+  });
+
+  test("reports a conflict when another task already claimed the content", async () => {
+    const client = createMockHerdrClient({
+      agents: { "w1G:p1": AGENT_INFO },
+      agentReads: { "w1G:p1": "claimed output" },
+    });
+    const { store, close } = makeStore();
+
+    try {
+      await runCapture(client, store, "w1G:p1", CLAIM);
+      const lost = await runCapture(client, store, "w1G:p1", RIVAL);
+
+      assert.equal(lost.status, "conflict");
+      if (lost.status !== "conflict") {
+        throw new Error("Expected a conflict outcome.");
+      }
+      assert.equal(lost.requestedOrchestrationId, RIVAL.id);
+      assert.equal(lost.existingOrchestrationId, CLAIM.id);
+      assert.equal(lost.result.orchestrationId, CLAIM.id);
+      assert.equal(lost.result.orchestrationLabel, CLAIM.label);
+    } finally {
+      close();
+    }
+  });
+
+  test("claims a result that an automatic capture stored first", async () => {
+    const client = createMockHerdrClient({
+      agents: { "w1G:p1": AGENT_INFO },
+      agentReads: { "w1G:p1": "claimed output" },
+    });
+    const { store, close } = makeStore();
+
+    try {
+      const automatic = await runCapture(client, store);
+      assert.equal(automatic.status, "captured");
+      assert.equal(automatic.orchestration, undefined);
+
+      const claimed = await runCapture(client, store, "w1G:p1", CLAIM);
+      assert.equal(claimed.status, "duplicate");
+      if (claimed.status !== "duplicate") {
+        throw new Error("Expected a duplicate outcome.");
+      }
+      assert.deepEqual(claimed.orchestration, { status: "claimed", id: CLAIM.id });
+      assert.equal(store.get(claimed.result.id)?.orchestrationRole, "explorer");
+    } finally {
+      close();
+    }
+  });
+
+  test("leaves an explicit claim alone when only automatic captures follow", async () => {
+    const client = createMockHerdrClient({
+      agents: { "w1G:p1": AGENT_INFO },
+      agentReads: { "w1G:p1": "claimed output" },
+    });
+    const { store, close } = makeStore();
+
+    try {
+      const claimed = await runCapture(client, store, "w1G:p1", CLAIM);
+      assert.equal(claimed.status, "captured");
+      if (claimed.status !== "captured") {
+        throw new Error("Expected a captured outcome.");
+      }
+
+      const automatic = await runCapture(client, store);
+      assert.equal(automatic.status, "duplicate");
+      assert.equal(automatic.orchestration, undefined);
+      assert.equal(store.get(claimed.result.id)?.orchestrationId, CLAIM.id);
+      assert.equal(store.get(claimed.result.id)?.orchestrationLabel, CLAIM.label);
+    } finally {
+      close();
+    }
+  });
 });
+
+const CLAIM: OrchestrationClaim = {
+  id: "2f6a3c1e-8b1d-4a30-9a4f-5b1c2d3e4f50",
+  label: "探索: fix the parser",
+  role: "explorer",
+};
+
+const RIVAL: OrchestrationClaim = {
+  id: "7c9e1d2a-3b4c-4d5e-8f90-a1b2c3d4e5f6",
+  label: "Repair the parser",
+  role: "fixer",
+};
 
 async function runCapture(
   client: HerdrClient,
   store: SqliteResultStore,
   paneId = "w1G:p1",
+  orchestration?: OrchestrationClaim,
 ): Promise<CaptureOutcome> {
   const deps: CaptureDeps = {
     client,
@@ -437,7 +568,7 @@ async function runCapture(
     config: CONFIG,
     now: () => 1_700_000_000_000,
   };
-  return captureCompletion(deps, { paneId });
+  return captureCompletion(deps, { paneId, orchestration });
 }
 
 function makeStore(): { store: SqliteResultStore; close: () => void } {

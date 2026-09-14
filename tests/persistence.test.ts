@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { describe, test } from "node:test";
 
 import { contentHash, dedupKey } from "../src/domain/dedup.ts";
+import type { OrchestrationClaim, OrchestrationRole } from "../src/domain/orchestration.ts";
 import type { CaptureInput, HarvestResult } from "../src/domain/result.ts";
 import { openDatabase } from "../src/persistence/database.ts";
 import { MIGRATIONS, runMigrations } from "../src/persistence/migrations.ts";
@@ -41,6 +42,46 @@ function inserted(outcome: InsertOutcome): HarvestResult {
   return outcome.result;
 }
 
+/** The schema version a database reports. */
+function versionOf(db: DatabaseSync): number | undefined {
+  const row = db.prepare("PRAGMA user_version").get() as { user_version?: number } | undefined;
+  return row?.user_version;
+}
+
+/** Column names of the results table, in table order. */
+function resultColumnNames(db: DatabaseSync): string[] {
+  const rows = db.prepare("PRAGMA table_info(results)").all() as Array<{ name?: unknown }>;
+  return rows.map((row) => String(row.name));
+}
+
+/** Index names defined on the results table. */
+function resultIndexNames(db: DatabaseSync): string[] {
+  const rows = db.prepare("PRAGMA index_list(results)").all() as Array<{ name?: unknown }>;
+  return rows.map((row) => String(row.name));
+}
+
+/** The result without its claim fields, for byte-for-byte comparisons. */
+function withoutClaim(result: HarvestResult): Record<string, unknown> {
+  const copy: Record<string, unknown> = { ...result };
+  delete copy.orchestrationId;
+  delete copy.orchestrationLabel;
+  delete copy.orchestrationRole;
+  return copy;
+}
+
+/** The claim fields of one stored result, for whole-value comparisons. */
+function claimOf(result: HarvestResult): {
+  orchestrationId: string | null;
+  orchestrationLabel: string | null;
+  orchestrationRole: string | null;
+} {
+  return {
+    orchestrationId: result.orchestrationId,
+    orchestrationLabel: result.orchestrationLabel,
+    orchestrationRole: result.orchestrationRole,
+  };
+}
+
 describe("migrations", () => {
   test("migrates a fresh database and is idempotent", () => {
     const db = openDatabase(":memory:");
@@ -62,6 +103,26 @@ describe("migrations", () => {
       });
     } finally {
       db.close();
+    }
+  });
+
+  test("gives a fresh database the orchestration claim column and index", () => {
+    const db = openDatabase(":memory:");
+    const store = new SqliteResultStore(db);
+    try {
+      assert.equal(versionOf(db), 4);
+      assert.deepEqual(
+        resultColumnNames(db).filter((name) => name.startsWith("orchestration_")),
+        ["orchestration_id", "orchestration_label", "orchestration_role"],
+      );
+      assert.ok(resultIndexNames(db).includes("results_orchestration_id"));
+
+      const result = inserted(store.insert(makeInput()));
+      assert.equal(result.orchestrationId, null);
+      assert.equal(result.orchestrationLabel, null);
+      assert.equal(result.orchestrationRole, null);
+    } finally {
+      store.close();
     }
   });
 
@@ -188,13 +249,13 @@ test("upgrades a v1 database without changing legacy rows", () => {
 
     assert.deepEqual(runMigrations(db), {
       from: 1,
-      to: 3,
-      applied: ["add-herdr-session", "create-pane-lifecycle"],
+      to: 4,
+      applied: ["add-herdr-session", "create-pane-lifecycle", "add-orchestration-claim"],
     });
     const version = db.prepare("PRAGMA user_version").get() as
       | { user_version?: number }
       | undefined;
-    assert.equal(version?.user_version, 3);
+    assert.equal(version?.user_version, 4);
 
     const store = new SqliteResultStore(db);
     assert.deepEqual(store.get(legacy.id), {
@@ -218,6 +279,9 @@ test("upgrades a v1 database without changing legacy rows", () => {
       dedupKey: legacy.dedupKey,
       readAtMs: legacy.readAtMs,
       archivedAtMs: legacy.archivedAtMs,
+      orchestrationId: null,
+      orchestrationLabel: null,
+      orchestrationRole: null,
     });
   } finally {
     db.close();
@@ -308,11 +372,11 @@ test("upgrades a v2 database without changing legacy rows", () => {
 
     assert.deepEqual(runMigrations(db), {
       from: 2,
-      to: 3,
-      applied: ["create-pane-lifecycle"],
+      to: 4,
+      applied: ["create-pane-lifecycle", "add-orchestration-claim"],
     });
     const version = db.prepare("PRAGMA user_version").get();
-    assert.equal(version?.user_version, 3);
+    assert.equal(version?.user_version, 4);
 
     const store = new SqliteResultStore(db);
     assert.deepEqual(store.get(legacy.id), {
@@ -336,7 +400,135 @@ test("upgrades a v2 database without changing legacy rows", () => {
       dedupKey: legacy.dedupKey,
       readAtMs: legacy.readAtMs,
       archivedAtMs: legacy.archivedAtMs,
+      orchestrationId: null,
+      orchestrationLabel: null,
+      orchestrationRole: null,
     });
+  } finally {
+    db.close();
+  }
+});
+
+test("upgrades a v3 database without changing legacy rows", () => {
+  const db = openDatabase(":memory:");
+  const v1 = MIGRATIONS[0];
+  const v2 = MIGRATIONS[1];
+  const v3 = MIGRATIONS[2];
+  if (v1 === undefined || v2 === undefined || v3 === undefined) {
+    throw new Error("Expected the v1, v2, and v3 migrations.");
+  }
+
+  const legacy = {
+    id: "legacy-v3-result",
+    capturedAtMs: 334_455,
+    workspaceId: "v3-workspace",
+    workspaceName: "V3 Workspace",
+    tabId: "v3-tab",
+    paneId: "v3-pane",
+    paneName: "V3 Pane",
+    agentName: "V3 Agent",
+    agentKind: "v3-kind",
+    agentSessionKind: "id",
+    agentSessionValue: "v3-session",
+    captureSource: "detection",
+    captureLineCount: 12,
+    rawText: "  v3 output  \\n世界 🚀\\n",
+    contentHash: "v3-content-hash",
+    dedupKey: "v3-dedup-key",
+    herdrSessionKey: "socket-v3",
+    herdrSessionLabel: "v3",
+    readAtMs: 445_566,
+    archivedAtMs: 556_677,
+  };
+
+  try {
+    v1.up(db);
+    db.exec("PRAGMA user_version = 1");
+    v2.up(db);
+    db.exec("PRAGMA user_version = 2");
+    v3.up(db);
+    db.exec("PRAGMA user_version = 3");
+    db.prepare(`
+      INSERT INTO results (
+        id,
+        captured_at_ms,
+        workspace_id,
+        workspace_name,
+        tab_id,
+        pane_id,
+        pane_name,
+        agent_name,
+        agent_kind,
+        agent_session_kind,
+        agent_session_value,
+        capture_source,
+        capture_line_count,
+        raw_text,
+        content_hash,
+        dedup_key,
+        herdr_session_key,
+        herdr_session_label,
+        read_at_ms,
+        archived_at_ms
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      legacy.id,
+      legacy.capturedAtMs,
+      legacy.workspaceId,
+      legacy.workspaceName,
+      legacy.tabId,
+      legacy.paneId,
+      legacy.paneName,
+      legacy.agentName,
+      legacy.agentKind,
+      legacy.agentSessionKind,
+      legacy.agentSessionValue,
+      legacy.captureSource,
+      legacy.captureLineCount,
+      legacy.rawText,
+      legacy.contentHash,
+      legacy.dedupKey,
+      legacy.herdrSessionKey,
+      legacy.herdrSessionLabel,
+      legacy.readAtMs,
+      legacy.archivedAtMs,
+    );
+
+    assert.deepEqual(runMigrations(db), {
+      from: 3,
+      to: 4,
+      applied: ["add-orchestration-claim"],
+    });
+    assert.equal(versionOf(db), 4);
+
+    const store = new SqliteResultStore(db);
+    assert.deepEqual(store.get(legacy.id), {
+      id: legacy.id,
+      capturedAtMs: legacy.capturedAtMs,
+      workspaceId: legacy.workspaceId,
+      workspaceName: legacy.workspaceName,
+      tabId: legacy.tabId,
+      paneId: legacy.paneId,
+      paneName: legacy.paneName,
+      agentName: legacy.agentName,
+      agentKind: legacy.agentKind,
+      agentSessionKind: legacy.agentSessionKind,
+      agentSessionValue: legacy.agentSessionValue,
+      herdrSessionKey: legacy.herdrSessionKey,
+      herdrSessionLabel: legacy.herdrSessionLabel,
+      captureSource: legacy.captureSource,
+      captureLineCount: legacy.captureLineCount,
+      rawText: legacy.rawText,
+      contentHash: legacy.contentHash,
+      dedupKey: legacy.dedupKey,
+      readAtMs: legacy.readAtMs,
+      archivedAtMs: legacy.archivedAtMs,
+      orchestrationId: null,
+      orchestrationLabel: null,
+      orchestrationRole: null,
+    });
+    assert.ok(resultColumnNames(db).includes("orchestration_id"));
+    assert.ok(resultIndexNames(db).includes("results_orchestration_id"));
   } finally {
     db.close();
   }
@@ -836,5 +1028,257 @@ describe("SqliteResultStore", () => {
     } finally {
       store.close();
     }
+  });
+});
+
+describe("orchestration claims", () => {
+  const claim: OrchestrationClaim = {
+    id: "2f6a3c1e-8b1d-4a30-9a4f-5b1c2d3e4f50",
+    label: "探索: fix the parser",
+    role: "explorer",
+  };
+  const rival: OrchestrationClaim = {
+    id: "7c9e1d2a-3b4c-4d5e-8f90-a1b2c3d4e5f6",
+    label: "Repair the parser",
+    role: "fixer",
+  };
+
+  function withStore(run: (store: SqliteResultStore) => void): void {
+    const db = openDatabase(":memory:");
+    const store = new SqliteResultStore(db);
+    try {
+      run(store);
+    } finally {
+      store.close();
+    }
+  }
+
+  test("records no claim for an automatic capture", () => {
+    withStore((store) => {
+      const outcome = store.insert(makeInput());
+      assert.equal(outcome.status, "inserted");
+      assert.equal(outcome.claim, undefined);
+      assert.deepEqual(claimOf(outcome.result), {
+        orchestrationId: null,
+        orchestrationLabel: null,
+        orchestrationRole: null,
+      });
+    });
+  });
+
+  test("claims a fresh capture inside the insert", () => {
+    withStore((store) => {
+      const outcome = store.insert(makeInput(), claim);
+      assert.equal(outcome.status, "inserted");
+      assert.deepEqual(outcome.claim, { status: "claimed", orchestrationId: claim.id });
+      assert.deepEqual(claimOf(outcome.result), {
+        orchestrationId: claim.id,
+        orchestrationLabel: claim.label,
+        orchestrationRole: claim.role,
+      });
+      assert.deepEqual(store.get(outcome.result.id), outcome.result);
+    });
+  });
+
+  test("treats an identical repeated claim as idempotent", () => {
+    withStore((store) => {
+      const first = store.insert(makeInput(), claim);
+      const second = store.insert(makeInput(), claim);
+
+      assert.equal(second.status, "duplicate");
+      assert.deepEqual(second.claim, { status: "already_claimed", orchestrationId: claim.id });
+      assert.equal(second.result.id, first.result.id);
+      assert.deepEqual(claimOf(second.result), {
+        orchestrationId: claim.id,
+        orchestrationLabel: claim.label,
+        orchestrationRole: claim.role,
+      });
+      assert.equal(store.list({ includeArchived: true }).length, 1);
+    });
+  });
+
+  test("conflicts when a different task claims the same content", () => {
+    withStore((store) => {
+      const first = store.insert(makeInput(), claim);
+      const second = store.insert(makeInput(), rival);
+
+      assert.equal(second.status, "duplicate");
+      assert.deepEqual(second.claim, {
+        status: "conflict",
+        requestedOrchestrationId: rival.id,
+        existingOrchestrationId: claim.id,
+      });
+      // First writer wins: the stored row keeps the original claim untouched.
+      assert.deepEqual(claimOf(second.result), {
+        orchestrationId: claim.id,
+        orchestrationLabel: claim.label,
+        orchestrationRole: claim.role,
+      });
+      assert.deepEqual(store.get(first.result.id), first.result);
+      assert.equal(store.list({ includeArchived: true }).length, 1);
+    });
+  });
+
+  test("conflicts when the same id returns with a different label or role", () => {
+    withStore((store) => {
+      store.insert(makeInput(), claim);
+
+      const otherLabel = store.insert(makeInput(), { ...claim, label: "another label" });
+      assert.deepEqual(otherLabel.claim, {
+        status: "conflict",
+        requestedOrchestrationId: claim.id,
+        existingOrchestrationId: claim.id,
+      });
+
+      const otherRole = store.insert(makeInput(), { ...claim, role: "fixer" });
+      assert.deepEqual(otherRole.claim, {
+        status: "conflict",
+        requestedOrchestrationId: claim.id,
+        existingOrchestrationId: claim.id,
+      });
+      assert.equal(store.get(otherRole.result.id)?.orchestrationLabel, claim.label);
+      assert.equal(store.get(otherRole.result.id)?.orchestrationRole, "explorer");
+    });
+  });
+
+  test("keeps every non-orchestration field byte-for-byte when claiming a row", () => {
+    withStore((store) => {
+      const rawText = "first line  \n\n世界 🚀\ttrailing  ";
+      const result = inserted(store.insert(makeInput({ capturedAtMs: 1_234, rawText })));
+      const before = store.get(result.id);
+      if (before === null) {
+        throw new Error("Expected the stored result.");
+      }
+
+      const claimed = store.claimOrchestration(result.id, claim);
+      assert.equal(claimed.status, "claimed");
+      if (claimed.status !== "claimed") {
+        throw new Error("Expected a claimed outcome.");
+      }
+
+      assert.deepEqual(withoutClaim(claimed.result), withoutClaim(before));
+      assert.equal(claimed.result.rawText, rawText);
+      assert.deepEqual([...claimed.result.rawText], [...rawText]);
+      assert.equal(claimed.result.contentHash, before.contentHash);
+      assert.equal(claimed.result.dedupKey, before.dedupKey);
+      assert.equal(claimed.result.capturedAtMs, before.capturedAtMs);
+    });
+  });
+
+  test("claims an existing unclaimed row and reports an unknown id", () => {
+    withStore((store) => {
+      const result = inserted(store.insert(makeInput()));
+
+      const claimed = store.claimOrchestration(result.id, claim);
+      assert.equal(claimed.status, "claimed");
+      if (claimed.status !== "claimed") {
+        throw new Error("Expected a claimed outcome.");
+      }
+      assert.deepEqual(claimOf(claimed.result), {
+        orchestrationId: claim.id,
+        orchestrationLabel: claim.label,
+        orchestrationRole: claim.role,
+      });
+      assert.deepEqual(store.claimOrchestration("missing", claim), { status: "not_found" });
+    });
+  });
+
+  test("claims an archived row without changing its flags", () => {
+    withStore((store) => {
+      const result = inserted(store.insert(makeInput()));
+      store.markRead(result.id, 10);
+      store.archive(result.id, 20);
+
+      const claimed = store.claimOrchestration(result.id, claim);
+      assert.equal(claimed.status, "claimed");
+      if (claimed.status !== "claimed") {
+        throw new Error("Expected a claimed outcome.");
+      }
+      assert.equal(claimed.result.readAtMs, 10);
+      assert.equal(claimed.result.archivedAtMs, 20);
+    });
+  });
+
+  test("lets an explicit claim survive a later automatic capture", () => {
+    withStore((store) => {
+      const first = store.insert(makeInput(), claim);
+      const automatic = store.insert(makeInput());
+
+      assert.equal(automatic.status, "duplicate");
+      assert.equal(automatic.claim, undefined);
+      assert.deepEqual(claimOf(automatic.result), claimOf(first.result));
+    });
+  });
+
+  test("lets an explicit claim follow an automatic capture", () => {
+    withStore((store) => {
+      const automatic = store.insert(makeInput());
+      assert.equal(automatic.claim, undefined);
+
+      const claimed = store.insert(makeInput(), claim);
+      assert.equal(claimed.status, "duplicate");
+      assert.deepEqual(claimed.claim, { status: "claimed", orchestrationId: claim.id });
+      assert.equal(claimed.result.id, automatic.result.id);
+      assert.deepEqual(claimOf(claimed.result), {
+        orchestrationId: claim.id,
+        orchestrationLabel: claim.label,
+        orchestrationRole: claim.role,
+      });
+    });
+  });
+
+  test("resolves competing claims first-writer-wins in either order", () => {
+    withStore((store) => {
+      store.insert(makeInput(), claim);
+      const lost = store.insert(makeInput(), rival);
+      assert.deepEqual(lost.claim, {
+        status: "conflict",
+        requestedOrchestrationId: rival.id,
+        existingOrchestrationId: claim.id,
+      });
+      assert.equal(lost.result.orchestrationLabel, claim.label);
+    });
+
+    withStore((store) => {
+      store.insert(makeInput(), rival);
+      const lost = store.insert(makeInput(), claim);
+      assert.deepEqual(lost.claim, {
+        status: "conflict",
+        requestedOrchestrationId: claim.id,
+        existingOrchestrationId: rival.id,
+      });
+      assert.equal(lost.result.orchestrationRole, "fixer");
+    });
+  });
+
+  test("preserves a Unicode label exactly", () => {
+    withStore((store) => {
+      const label = "  探索 🔍 – 修正  ";
+      const result = inserted(store.insert(makeInput(), { ...claim, label }));
+      const stored = store.get(result.id);
+
+      assert.equal(stored?.orchestrationLabel, label);
+      assert.deepEqual([...(stored?.orchestrationLabel ?? "")], [...label]);
+    });
+  });
+
+  test("rejects a malformed claim before writing a row", () => {
+    withStore((store) => {
+      assert.throws(() => store.insert(makeInput(), { ...claim, id: "orch_7f3a" }), RangeError);
+      assert.throws(
+        () => store.insert(makeInput(), { ...claim, id: claim.id.toUpperCase() }),
+        RangeError,
+      );
+      assert.throws(
+        () => store.insert(makeInput(), { ...claim, role: "Explorer" as OrchestrationRole }),
+        RangeError,
+      );
+      assert.throws(() => store.insert(makeInput(), { ...claim, label: "   " }), RangeError);
+      assert.throws(
+        () => store.insert(makeInput(), { ...claim, label: "a".repeat(257) }),
+        RangeError,
+      );
+      assert.deepEqual(store.list({ includeArchived: true }), []);
+    });
   });
 });
