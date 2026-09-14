@@ -6,9 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-14
+
 ### Added
 
-- Added Result search across Active, Archived, or All results using `/`, including captured output and session/workspace metadata.
+- Added Result search across Active, Archived, or All results using `/`, covering captured output and agent/session/workspace metadata with literal Unicode NFC-normalized matching and ASCII case-insensitive comparison.
 
 ## [0.2.0] - 2026-09-13
 
@@ -53,7 +55,8 @@ First public release.
 - A completion inferred only from `blocked → idle` is not captured, because that transition can equally mean an approval prompt was cancelled.
 - Archived results stay in the database but cannot yet be browsed or restored from the inbox.
 
-[Unreleased]: https://github.com/j1nn0/herdr-harvest/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/j1nn0/herdr-harvest/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/j1nn0/herdr-harvest/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/j1nn0/herdr-harvest/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/j1nn0/herdr-harvest/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/j1nn0/herdr-harvest/releases/tag/v0.1.0
