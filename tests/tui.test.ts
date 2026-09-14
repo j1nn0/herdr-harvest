@@ -194,6 +194,18 @@ async function sendInput(instance: ReturnType<typeof render>, input: string): Pr
   await tick();
 }
 
+/**
+ * Write every chunk before Ink delivers any of them. Ink 7.1.1 emits one
+ * `useInput` event per parser event and only splits backspace bytes, so each
+ * write reaches the app as its own event while React has not re-rendered yet.
+ */
+async function sendBatch(instance: ReturnType<typeof render>, chunks: string[]): Promise<void> {
+  for (const chunk of chunks) {
+    instance.stdin.write(chunk);
+  }
+  await tick();
+}
+
 function hasAgent(frame: string, id: string): boolean {
   return frame.split("\n").some((line) => line.includes(`agent-${id} `));
 }
@@ -1759,6 +1771,373 @@ describe("inbox search with a real store", () => {
       }
     } finally {
       store.close();
+    }
+  });
+});
+
+describe("inbox search batching", () => {
+  test("applies typed text and Enter delivered in one batch", async () => {
+    const fixture = makeFixture([makeItem("alpha-one"), makeItem("beta-one")]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      await sendBatch(instance, ["/", "alpha", "\r"]);
+
+      const frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Result Search · Active · 1 match/);
+      assert.match(frame, /Search: alpha/);
+      assert.equal(hasAgent(frame, "alpha-one"), true);
+      assert.equal(hasAgent(frame, "beta-one"), false);
+      // Enter applied the search instead of falling through to the inbox keys.
+      assert.deepEqual(fixture.calls.opened, []);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("applies a single write that carries text and Enter", async () => {
+    // Ink 7.1.1 only splits backspace bytes, so "alpha\r" is one input event;
+    // the key flags describe the whole event and key.return stays false, so the
+    // \r inside the string has to drive the apply.
+    const fixture = makeFixture([makeItem("alpha-one"), makeItem("beta-one")]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      await sendBatch(instance, ["/", "alpha\r"]);
+
+      const frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Result Search · Active · 1 match/);
+      assert.match(frame, /Search: alpha/);
+      assert.equal(hasAgent(frame, "alpha-one"), true);
+      assert.deepEqual(fixture.calls.opened, []);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("applies a query typed in several chunks", async () => {
+    const fixture = makeFixture([makeItem("alpha-one"), makeItem("beta-one")]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      await sendBatch(instance, ["/", "al", "ph", "a", "\r"]);
+
+      const frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Result Search · Active · 1 match/);
+      assert.match(frame, /Search: alpha/);
+      assert.equal(hasAgent(frame, "alpha-one"), true);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("applies a Japanese query typed in several chunks", async () => {
+    const fixture = makeFixture([makeItem("日本語"), makeItem("english")]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      await sendBatch(instance, ["/", "日本", "語", "\r"]);
+
+      const frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Result Search · Active · 1 match/);
+      assert.match(frame, /Search: 日本語/);
+      assert.equal(hasAgent(frame, "日本語"), true);
+      assert.equal(hasAgent(frame, "english"), false);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("applies the draft left by a batched Backspace", async () => {
+    const fixture = makeFixture([makeItem("alpha-one"), makeItem("beta-one")]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      // Terminals send DEL for Backspace, which Ink splits into its own event.
+      await sendBatch(instance, ["/", "alpha", "\u007f", "\r"]);
+
+      const frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Search: alph/);
+      assert.doesNotMatch(frame, /Search: alpha/);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("deletes a whole code point with a batched Backspace", async () => {
+    const fixture = makeFixture([makeItem("alpha-one")]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      await sendBatch(instance, ["/", "🚀", "\u007f", "\r"]);
+
+      // The draft is empty again, so Enter left search instead of applying the
+      // unpaired surrogate a code-unit backspace would leave behind.
+      const frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Result Inbox · 1 result/);
+      assert.doesNotMatch(frame, /Search:/);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("re-enters an applied search and reapplies it in one batch", async () => {
+    const fixture = makeFixture([makeItem("alpha-one"), makeItem("beta-one")]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      await sendBatch(instance, ["/", "alpha", "\r"]);
+      assert.match(instance.lastFrame() ?? "", /Search: alpha/);
+
+      // "/" re-enters editing with the applied query as the draft, the next
+      // chunk extends it, and Enter applies the extended query.
+      await sendBatch(instance, ["/", "-one", "\r"]);
+
+      const frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Result Search · Active · 1 match/);
+      assert.match(frame, /Search: alpha-one/);
+      assert.deepEqual(fixture.calls.opened, []);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("advances the search scope twice for a batched Tab pair", async () => {
+    const fixture = makeFixture([makeItem("alpha-active"), makeArchivedItem("alpha-archived")]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      await sendBatch(instance, ["/", "alpha", "\r"]);
+      assert.match(instance.lastFrame() ?? "", /Harvest Result Search · Active · 1 match/);
+
+      // Active -> Archived -> All; a single advance would stop at Archived.
+      await sendBatch(instance, ["\t", "\t"]);
+      assert.match(instance.lastFrame() ?? "", /Harvest Result Search · All · 2 matches/);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("advances the search scope three times for a batched Tab triple", async () => {
+    const fixture = makeFixture([makeItem("alpha-active"), makeArchivedItem("alpha-archived")]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      await sendBatch(instance, ["/", "alpha", "\r"]);
+
+      // Active -> Archived -> All -> Active; one or two advances land elsewhere.
+      await sendBatch(instance, ["\t", "\t", "\t"]);
+      assert.match(instance.lastFrame() ?? "", /Harvest Result Search · Active · 1 match/);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("cycles the scope while editing, keeps the draft, and applies it there", async () => {
+    const fixture = makeFixture([
+      makeItem("alpha-active"),
+      makeArchivedItem("alpha-archived"),
+      makeArchivedItem("beta-archived"),
+    ]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      await sendBatch(instance, ["/", "alpha", "\t"]);
+
+      let frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Result Search · Archived/);
+      assert.match(frame, /Search: alpha_/);
+      // No query is applied yet, so the tabbed-to scope stays unfiltered.
+      assert.equal(hasAgent(frame, "alpha-archived"), true);
+      assert.equal(hasAgent(frame, "beta-archived"), true);
+      assert.equal(hasAgent(frame, "alpha-active"), false);
+
+      await sendBatch(instance, ["\r"]);
+
+      frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Result Search · Archived · 1 match/);
+      assert.match(frame, /Search: alpha/);
+      assert.equal(hasAgent(frame, "alpha-archived"), true);
+      assert.equal(hasAgent(frame, "beta-archived"), false);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("resets the cursor when a batched Tab cycles the scope", async () => {
+    const fixture = makeFixture([
+      makeItem("alpha-one"),
+      makeItem("alpha-two"),
+      makeArchivedItem("alpha-archived"),
+    ]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      await sendBatch(instance, ["/", "alpha", "\r"]);
+      await sendBatch(instance, ["j"]);
+      await sendBatch(instance, ["\t"]);
+      await sendBatch(instance, ["\r"]);
+
+      // The scope change reset the cursor onto the first archived match.
+      assert.deepEqual(fixture.calls.opened, ["alpha-archived"]);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("cancels only the draft after a scope cycle while editing", async () => {
+    const fixture = makeFixture([
+      makeItem("alpha-one"),
+      makeItem("alpha-two"),
+      makeArchivedItem("alpha-archived"),
+    ]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      await sendBatch(instance, ["/", "alpha", "\r"]);
+      await sendBatch(instance, ["/", "-one", "\t"]);
+      await sendInput(instance, "\u001b");
+
+      const frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Result Search · Archived · 1 match/);
+      assert.match(frame, /Search: alpha/);
+      assert.doesNotMatch(frame, /Search: alpha-one/);
+      assert.equal(hasAgent(frame, "alpha-archived"), true);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("applies each batched Tab to the plain collection toggle", async () => {
+    const fixture = makeFixture([makeItem("active-one"), makeArchivedItem("arch-one")]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      // Two toggles from the active collection land back on it; a batch that
+      // applied only one Tab would stop on Archived.
+      await sendBatch(instance, ["\t", "\t"]);
+      assert.match(instance.lastFrame() ?? "", /Harvest Result Inbox · 1 result/);
+      assert.doesNotMatch(instance.lastFrame() ?? "", /Harvest Result Search/);
+      assert.equal(hasAgent(instance.lastFrame() ?? "", "active-one"), true);
+      assert.equal(hasAgent(instance.lastFrame() ?? "", "arch-one"), false);
+
+      // A single toggle still works, so the assertion above was not a no-op.
+      await sendBatch(instance, ["\t"]);
+      assert.match(instance.lastFrame() ?? "", /Harvest Archived Results · 1 result/);
+    } finally {
+      instance.unmount();
+    }
+  });
+});
+
+describe("inbox search normalization", () => {
+  test("matches kana voiced marks across NFC forms in both directions", async () => {
+    const decomposed = "か\u3099く";
+    const composed = "がっこう";
+    const fixture = makeFixture([makeItem(decomposed), makeItem(composed), makeItem("plain")]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      // A composed query reaches the decomposed stored label ...
+      await sendBatch(instance, ["/", "がく", "\r"]);
+      let frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Result Search · Active · 1 match/);
+      assert.equal(hasAgent(frame, decomposed), true);
+      assert.equal(hasAgent(frame, composed), false);
+
+      await sendInput(instance, "\u001b");
+
+      // ... and a decomposed query reaches the composed stored label.
+      await sendBatch(instance, ["/", "か\u3099っ", "\r"]);
+      frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Result Search · Active · 1 match/);
+      assert.equal(hasAgent(frame, composed), true);
+      assert.equal(hasAgent(frame, decomposed), false);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("matches decomposed Latin text against a composed query", async () => {
+    const decomposed = "cafe\u0301";
+    const fixture = makeFixture([makeItem(decomposed), makeItem("plain-one")]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      await sendBatch(instance, ["/", "café", "\r"]);
+
+      const frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Result Search · Active · 1 match/);
+      assert.equal(hasAgent(frame, decomposed), true);
+      assert.equal(hasAgent(frame, "plain-one"), false);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("matches a composed label against a decomposed query", async () => {
+    const composed = "café";
+    const fixture = makeFixture([makeItem(composed), makeItem("plain-one")]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      await sendBatch(instance, ["/", "cafe\u0301", "\r"]);
+
+      const frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Result Search · Active · 1 match/);
+      assert.equal(hasAgent(frame, composed), true);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("matches ASCII case-insensitively alongside Japanese text", async () => {
+    const fixture = makeFixture([makeItem("日本-Release"), makeItem("日本-other")]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      await sendBatch(instance, ["/", "release", "\r"]);
+      let frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Result Search · Active · 1 match/);
+      assert.equal(hasAgent(frame, "日本-Release"), true);
+      assert.equal(hasAgent(frame, "日本-other"), false);
+
+      await sendInput(instance, "\u001b");
+      await sendBatch(instance, ["/", "日本-release", "\r"]);
+      frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Result Search · Active · 1 match/);
+      assert.equal(hasAgent(frame, "日本-Release"), true);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("does not fold width, kana script, or voicing on its own", async () => {
+    const fixture = makeFixture([makeItem("おはよう"), makeItem("ｶﾀｶﾅ"), makeItem("かたかな")]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      await sendBatch(instance, ["/", "オハヨウ", "\r"]);
+      let frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Result Search · Active · 0 matches/);
+      assert.match(frame, /No results match "オハヨウ"/);
+
+      await sendInput(instance, "\u001b");
+      await sendBatch(instance, ["/", "カタカナ", "\r"]);
+      frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Result Search · Active · 0 matches/);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("keeps the displayed raw text byte-identical after a normalized search", async () => {
+    const decomposed = "cafe\u0301";
+    const item = makeItem(decomposed);
+    const rawText = `${decomposed} 日本語 🚀\nsecond line`;
+    const [firstLine = ""] = rawText.split("\n");
+    const details = new Map([[item.id, makeDetail(item, rawText)]]);
+    // The stored text really is decomposed, so normalization is doing the work.
+    assert.notEqual(rawText, rawText.normalize("NFC"));
+    const fixture = makeFixture([item], { details });
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      await sendBatch(instance, ["/", "café", "\r"]);
+      assert.match(instance.lastFrame() ?? "", /Harvest Result Search · Active · 1 match/);
+
+      await sendBatch(instance, ["\r"]);
+      const frame = instance.lastFrame() ?? "";
+      // Even the opened title carries the stored code points.
+      assert.equal(frame.includes(`Harvest Result · agent-${decomposed}`), true);
+
+      const bodyLine = frame.split("\n").find((line) => line.includes("日本語")) ?? "";
+      assert.notEqual(bodyLine, "");
+      assert.deepEqual([...bodyLine.slice(1)], [...firstLine]);
+      assert.equal(details.get(item.id)?.rawText, rawText);
+    } finally {
+      instance.unmount();
     }
   });
 });

@@ -1,5 +1,5 @@
-import { useApp, useInput, useStdout } from "ink";
-import React, { type FC, useEffect, useState } from "react";
+import { type Key, useApp, useInput, useStdout } from "ink";
+import React, { type FC, useEffect, useRef, useState } from "react";
 import type {
   InboxDetail,
   InboxItem,
@@ -109,23 +109,61 @@ export function createApp(port: InboxPort): FC {
     };
 
     /**
+     * The collection that last became effective, mirrored outside React so a
+     * burst of input events inside one render cannot list the wrong collection.
+     */
+    const modeRef = useRef<InboxMode>("active");
+
+    /**
+     * The effective search session. `updateSearch` is its only writer: syncing
+     * it from the render body would clobber updates that are queued but not
+     * committed yet, which is exactly what a burst of input events produces.
+     */
+    const searchRef = useRef<SearchState | null>(null);
+
+    /**
+     * The one listing call: a search session lists its scope and applied query,
+     * a plain inbox lists the collection that became effective last.
+     */
+    const listForSearch = (active: SearchState | null): InboxItem[] =>
+      active === null
+        ? port.list(modeRef.current)
+        : port.list({ mode: active.scope, query: active.query });
+
+    /**
+     * The single owner of the search session. `update` always runs against the
+     * latest effective state rather than the render closure, the result is
+     * published synchronously so the next input event sees it, and `relist`
+     * derives the rows from that same result, so the header and the list cannot
+     * disagree. The render follows afterwards.
+     */
+    const updateSearch = (
+      update: (current: SearchState | null) => SearchState | null,
+      options: { relist?: boolean } = {},
+    ): SearchState | null => {
+      const next = update(searchRef.current);
+      searchRef.current = next;
+      setSearch(next);
+      if (options.relist === true) {
+        setItems(listForSearch(next));
+        setPosition({ cursor: 0, listOffset: 0 });
+        setStatus(null);
+      }
+      return next;
+    };
+
+    /**
      * Collection switches replace the whole list, so the cursor and the list
      * offset are reset together in one atomic position update, and a status from
      * the previous collection is cleared.
      */
     const switchMode = (next: InboxMode): void => {
+      modeRef.current = next;
       setMode(next);
-      setItems(port.list(next));
+      setItems(listForSearch(null));
       setPosition({ cursor: 0, listOffset: 0 });
       setStatus(null);
     };
-
-    /**
-     * The port call behind every refresh: a search session lists its own scope
-     * and applied query, while the plain inbox lists the current collection.
-     */
-    const listFromPort = (): InboxItem[] =>
-      search === null ? port.list(mode) : port.list({ mode: search.scope, query: search.query });
 
     /**
      * Search-session switches replace the whole list like a collection switch,
@@ -134,51 +172,50 @@ export function createApp(port: InboxPort): FC {
      * collection, which Esc must always be able to restore.
      */
     const showSearch = (next: SearchState | null): void => {
-      setSearch(next);
-      setItems(
-        next === null ? port.list(mode) : port.list({ mode: next.scope, query: next.query }),
-      );
-      setPosition({ cursor: 0, listOffset: 0 });
-      setStatus(null);
+      updateSearch(() => next, { relist: true });
     };
 
     /** The first entry opens on the collection in view; later ones keep the applied query. */
     const beginSearchEdit = (): void => {
-      const current = search ?? { query: "", draft: "", scope: mode, editing: false };
-      setSearch({ ...current, editing: true, draft: current.query });
+      updateSearch((current) => {
+        const base = current ?? { query: "", draft: "", scope: modeRef.current, editing: false };
+        return { ...base, editing: true, draft: base.query };
+      });
     };
 
-    /** Draft edits go through one queued updater so batched keys still apply in order. */
+    /** Draft edits go through the ref updater so batched keys still apply in order. */
     const editDraft = (update: (draft: string) => string): void => {
-      setSearch((current) =>
-        current === null || !current.editing
-          ? current
-          : { ...current, draft: update(current.draft) },
+      updateSearch((current) =>
+        current?.editing === true ? { ...current, draft: update(current.draft) } : current,
       );
     };
 
     /** Enter applies the draft. A blank draft is not a filter, so it leaves search. */
     const applySearchEdit = (): void => {
-      if (search === null) {
-        return;
-      }
-      if (!isSearchQueryActive(search.draft)) {
-        showSearch(null);
-        return;
-      }
-      showSearch({ ...search, query: search.draft, draft: search.draft, editing: false });
+      updateSearch(
+        (current) => {
+          if (current === null || !isSearchQueryActive(current.draft)) {
+            return null;
+          }
+          return { ...current, query: current.draft, draft: current.draft, editing: false };
+        },
+        { relist: true },
+      );
     };
 
     /** Esc reverts the draft to the applied query, or leaves search when none was applied. */
     const cancelSearchEdit = (): void => {
-      if (search === null) {
+      const current = searchRef.current;
+      if (current === null) {
         return;
       }
-      if (!isSearchQueryActive(search.query)) {
+      if (!isSearchQueryActive(current.query)) {
         showSearch(null);
         return;
       }
-      setSearch({ ...search, editing: false, draft: search.query });
+      updateSearch((state) =>
+        state === null ? null : { ...state, editing: false, draft: state.query },
+      );
     };
 
     /** Esc from an applied search returns to the collection the search started from. */
@@ -186,17 +223,23 @@ export function createApp(port: InboxPort): FC {
       showSearch(null);
     };
 
+    /**
+     * Tab cycles the search scope while keeping the query, the draft, and
+     * whether the draft is open. The re-list uses the applied query only, so a
+     * draft that has never been applied still shows the whole target scope.
+     */
     const cycleSearchScope = (): void => {
-      if (search === null) {
-        return;
-      }
-      const scope: InboxScope =
-        search.scope === "active" ? "archived" : search.scope === "archived" ? "all" : "active";
-      showSearch({ ...search, scope });
+      updateSearch(
+        (current) =>
+          current === null ? null : { ...current, scope: nextSearchScope(current.scope) },
+        { relist: true },
+      );
     };
 
     const refreshItems = (hasStatus = status !== null): InboxItem[] => {
-      const nextItems = listFromPort();
+      // The ref, not the render closure: a refresh inside a burst of input
+      // events must list the session the last event left behind.
+      const nextItems = listForSearch(searchRef.current);
       const nextCursor = clampCursor(cursor, nextItems.length);
       const nextCapacity = inboxViewportLines(
         stdout.rows,
@@ -306,26 +349,31 @@ export function createApp(port: InboxPort): FC {
       }
 
       if (view === "inbox") {
-        if (search?.editing) {
+        if (searchRef.current?.editing === true) {
           // Query editing owns the keyboard: printable input becomes text, so
           // q, a, r, y, j, k, space, and / never reach the action keys below.
-          // Enter applies the draft and Esc cancels it. Tab stays out of the
-          // way here — the scope cycle belongs to the applied search, because
-          // a draft cannot know which collection it will run against yet.
-          if (key.return || input === "\r") {
-            applySearchEdit();
-            return;
-          }
-          if (key.escape || input === "\u001b") {
-            cancelSearchEdit();
-            return;
-          }
-          if (key.backspace || key.delete || input === "\u007f") {
-            editDraft((draft) => draft.slice(0, -1));
-            return;
-          }
-          if (!key.ctrl && !key.meta && isPrintableText(input) && !isMouseReport(input)) {
-            editDraft((draft) => draft + input);
+          // Each event is split into ordered steps first, because Ink only
+          // splits backspace bytes: one event can carry text plus Enter or Tab.
+          // Steps run one after another against the state the previous step
+          // left behind, and the gate reads the ref for the same reason.
+          for (const command of queryCommands(input, key)) {
+            switch (command.kind) {
+              case "append":
+                editDraft((draft) => draft + command.text);
+                break;
+              case "backspace":
+                editDraft(draftWithoutLastCodePoint);
+                break;
+              case "apply":
+                applySearchEdit();
+                break;
+              case "cycle-scope":
+                cycleSearchScope();
+                break;
+              case "cancel":
+                cancelSearchEdit();
+                break;
+            }
           }
           return;
         }
@@ -335,8 +383,8 @@ export function createApp(port: InboxPort): FC {
         // cycles its own scope instead, because "all" is not a collection the
         // plain inbox can show.
         if (key.tab && !key.shift) {
-          if (search === null) {
-            switchMode(mode === "active" ? "archived" : "active");
+          if (searchRef.current === null) {
+            switchMode(modeRef.current === "active" ? "archived" : "active");
           } else {
             cycleSearchScope();
           }
@@ -353,7 +401,7 @@ export function createApp(port: InboxPort): FC {
         if (key.escape || input === "\u001b") {
           // The first Esc clears an applied search; once the inbox is plain
           // again it quits exactly as it did before search existed.
-          if (search !== null) {
+          if (searchRef.current !== null) {
             clearSearch();
             return;
           }
@@ -541,24 +589,102 @@ function clampCursor(cursor: number, itemCount: number): number {
   return Math.min(Math.max(0, cursor), itemCount - 1);
 }
 
+/** One ordered step the query line performs while it owns the keyboard. */
+type QueryCommand =
+  | { kind: "append"; text: string }
+  | { kind: "backspace" }
+  | { kind: "apply" }
+  | { kind: "cycle-scope" }
+  | { kind: "cancel" };
+
 /**
- * Text that can be typed into the query line. Control bytes carry meaning (Tab,
- * Enter, Esc, DEL, Ctrl+letter) and never become query text, while space and
- * multi-character pastes are kept whole.
+ * Split one Ink input event into the ordered steps the query line acts on.
+ *
+ * Ink splits only backspace bytes out of a chunk, so one event can carry text
+ * plus Enter or Tab, and its key flags describe the whole event: `key.return` is
+ * false for `"alpha\r"` and true only for the bare key. Embedded control
+ * characters therefore drive the same steps as the bare keys, and the flags are
+ * trusted only when the event carries no text of its own. Japanese and emoji
+ * survive because the printable run is consumed by code point.
  */
-function isPrintableText(input: string): boolean {
-  if (input.length === 0) {
-    return false;
+function queryCommands(input: string, key: Key): QueryCommand[] {
+  if (isMouseReport(input) || key.ctrl || key.meta) {
+    return [];
+  }
+  // Escape never applies half an event: it cancels the whole thing.
+  if (input.includes("\u001b") || (input.length === 0 && key.escape)) {
+    return [{ kind: "cancel" }];
   }
 
+  if (input.length === 0) {
+    if (key.return) {
+      return [{ kind: "apply" }];
+    }
+    if (key.tab && !key.shift) {
+      return [{ kind: "cycle-scope" }];
+    }
+    return key.backspace || key.delete ? [{ kind: "backspace" }] : [];
+  }
+
+  const commands: QueryCommand[] = [];
+  let rest = input;
+  while (rest.length > 0) {
+    const character = rest[0];
+    if (character === "\r") {
+      commands.push({ kind: "apply" });
+      rest = rest.slice(1);
+      continue;
+    }
+    if (character === "\t") {
+      commands.push({ kind: "cycle-scope" });
+      rest = rest.slice(1);
+      continue;
+    }
+    if (character === "\u007f" || character === "\u0008") {
+      commands.push({ kind: "backspace" });
+      rest = rest.slice(1);
+      continue;
+    }
+
+    const run = printableRun(rest);
+    if (run.text.length === 0) {
+      // A control byte with no query meaning: drop the rest of the event.
+      break;
+    }
+    commands.push({ kind: "append", text: run.text });
+    rest = run.rest;
+  }
+
+  return commands;
+}
+
+/** Longest leading printable run, consumed by code point so pastes stay whole. */
+function printableRun(input: string): { text: string; rest: string } {
+  let text = "";
+  let consumed = 0;
   for (const character of input) {
     const codePoint = character.codePointAt(0);
     if (codePoint === undefined || codePoint < 0x20 || (codePoint >= 0x7f && codePoint <= 0x9f)) {
-      return false;
+      break;
     }
+    text += character;
+    consumed += character.length;
   }
+  return { text, rest: input.slice(consumed) };
+}
 
-  return true;
+/** Remove one code point, so a pasted surrogate pair is never cut in half. */
+function draftWithoutLastCodePoint(draft: string): string {
+  const characters = [...draft];
+  characters.pop();
+  return characters.join("");
+}
+
+function nextSearchScope(scope: InboxScope): InboxScope {
+  if (scope === "active") {
+    return "archived";
+  }
+  return scope === "archived" ? "all" : "active";
 }
 
 /**
