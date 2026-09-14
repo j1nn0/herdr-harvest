@@ -2,8 +2,20 @@ import { HerdrEnvError, isPaneAgentStatusChanged, readPluginEvent } from "@j1nn0
 import { decideCompletion } from "../capture/completion.ts";
 import type { CaptureOutcome } from "../capture/orchestrator.ts";
 import { runCapture } from "../capture/runner.ts";
+import { publishRuntimeLocator } from "../runtime/locator.ts";
 
 export async function runHook(): Promise<number> {
+  // Refresh discovery metadata on every hook run, including events that end up
+  // ignored, so the locator keeps tracking the Herdr session that is capturing.
+  // A missing locator is never a capture failure: only a failed write is worth a
+  // warning, because an unconfigured environment is normal outside Herdr.
+  const publication = publishRuntimeLocator(process.env);
+  if (!publication.published && publication.writeFailure === true) {
+    process.stderr.write(
+      `Harvest runtime locator not published: ${publication.reason ?? "unknown reason"}\n`,
+    );
+  }
+
   let event: ReturnType<typeof readPluginEvent>;
   try {
     event = readPluginEvent(process.env);

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, test } from "node:test";
@@ -9,6 +9,7 @@ import { promisify } from "node:util";
 
 import { openDatabase } from "../src/persistence/database.ts";
 import { SqliteResultStore } from "../src/persistence/result-store.ts";
+import { RUNTIME_LOCATOR_FILE_NAME } from "../src/runtime/locator.ts";
 import { spawnableCommand } from "./helpers/spawnable-command.ts";
 
 const execFileAsync = promisify(execFile);
@@ -410,9 +411,138 @@ describe("capture capabilities", () => {
     assert.deepEqual(JSON.parse(result.stdout), {
       protocol: "harvest-capture",
       protocolVersion: 1,
-      features: ["orchestration-claim"],
+      features: ["orchestration-claim", "runtime-locator"],
       roles: ["explorer", "fixer"],
     });
+  });
+});
+
+describe("runtime locator entrypoints", () => {
+  test("publishes the locator from the startup entrypoint and exits zero", async () => {
+    const fixture = makeFixture();
+    const configDirectory = join(fixture.stateDirectory, "plugin-config");
+    mkdirSync(configDirectory);
+
+    try {
+      const result = await runRegisterRuntime({
+        ...process.env,
+        HERDR_PLUGIN_CONFIG_DIR: configDirectory,
+        HERDR_PLUGIN_STATE_DIR: fixture.stateDirectory,
+        HERDR_SOCKET_PATH: "/run/herdr/nightly/herdr.sock",
+      });
+
+      assert.equal(result.exitCode, 0);
+      assert.equal(result.stderr, "");
+      const locatorPath = join(configDirectory, RUNTIME_LOCATOR_FILE_NAME);
+      assert.equal(result.stdout, `Harvest runtime locator published: ${locatorPath}\n`);
+
+      const locator = readLocator(configDirectory);
+      assert.equal(typeof locator.updatedAtMs, "number");
+      assert.deepEqual(locator, {
+        protocol: "harvest-runtime-locator",
+        protocolVersion: 1,
+        pluginId: "j1nn0.herdr-harvest",
+        stateDir: fixture.stateDirectory,
+        socketPath: "/run/herdr/nightly/herdr.sock",
+        updatedAtMs: locator.updatedAtMs,
+      });
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test("exits zero and reports one line when the startup entrypoint cannot publish", async () => {
+    const env = withoutLocatorPrerequisites({ ...process.env });
+
+    const result = await runRegisterRuntime(env);
+
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stdout, "");
+    assert.equal(
+      result.stderr,
+      "Harvest runtime locator not published: HERDR_PLUGIN_CONFIG_DIR is not set\n",
+    );
+  });
+
+  test("refreshes the locator on an ignored event and replaces it on the next run", async () => {
+    const fixture = makeFixture();
+    const configDirectory = join(fixture.stateDirectory, "plugin-config");
+    mkdirSync(configDirectory);
+
+    try {
+      const env = {
+        ...fixture.env,
+        HERDR_PLUGIN_CONFIG_DIR: configDirectory,
+        HERDR_PLUGIN_STATE_DIR: fixture.stateDirectory,
+        HERDR_SOCKET_PATH: "/run/herdr/first.sock",
+      };
+      const ignored = await runHook({
+        ...env,
+        HERDR_PLUGIN_EVENT_JSON: eventWithStatus("working"),
+      });
+
+      assert.equal(ignored.exitCode, 0);
+      assert.equal(ignored.stdout, "");
+      assert.equal(ignored.stderr, "");
+      assert.equal(readLocator(configDirectory).socketPath, "/run/herdr/first.sock");
+      assert.equal(readRows(fixture.stateDirectory).length, 0);
+
+      const captured = await runHook({
+        ...env,
+        HERDR_SOCKET_PATH: "/run/herdr/second.sock",
+        HERDR_PLUGIN_EVENT_JSON: doneEvent(),
+      });
+
+      assert.equal(captured.exitCode, 0);
+      assert.equal(summary(captured.stdout).status, "captured");
+      assert.equal(readLocator(configDirectory).socketPath, "/run/herdr/second.sock");
+      assert.equal(readRows(fixture.stateDirectory).length, 1);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test("stays silent when the locator prerequisites are absent", async () => {
+    const fixture = makeFixture();
+
+    try {
+      const result = await runHook({
+        ...withoutLocatorPrerequisites({ ...fixture.env }),
+        HERDR_PLUGIN_EVENT_JSON: eventWithStatus("working"),
+      });
+
+      assert.equal(result.exitCode, 0);
+      assert.equal(result.stdout, "");
+      assert.equal(result.stderr, "");
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test("captures normally and warns once when the locator cannot be written", async () => {
+    const fixture = makeFixture();
+    const configFile = join(fixture.stateDirectory, "config-is-a-file");
+    writeFileSync(configFile, "not a directory\n");
+
+    try {
+      const result = await runHook({
+        ...fixture.env,
+        HERDR_PLUGIN_CONFIG_DIR: configFile,
+        HERDR_PLUGIN_STATE_DIR: fixture.stateDirectory,
+        HERDR_SOCKET_PATH: "/run/herdr/nightly/herdr.sock",
+        HERDR_PLUGIN_EVENT_JSON: doneEvent(),
+      });
+
+      assert.equal(result.exitCode, 0);
+      assert.equal(summary(result.stdout).status, "captured");
+      assert.equal(readRows(fixture.stateDirectory).length, 1);
+
+      const warnings = result.stderr.split("\n").filter((line) => line.length > 0);
+      assert.equal(warnings.length, 1);
+      assert.match(warnings[0] ?? "", /^Harvest runtime locator not published: failed to write /);
+    } finally {
+      fixture.cleanup();
+    }
   });
 });
 
@@ -487,6 +617,43 @@ async function runCaptureEntrypoint(
       stderr: processOutput(error, "stderr"),
     };
   }
+}
+
+async function runRegisterRuntime(env: NodeJS.ProcessEnv): Promise<HookRun> {
+  try {
+    const result = await execFileAsync(process.execPath, ["src/bin/register-runtime.ts"], {
+      cwd: REPOSITORY_ROOT,
+      encoding: "utf8",
+      env,
+    });
+    return {
+      exitCode: 0,
+      stdout: String(result.stdout),
+      stderr: String(result.stderr),
+    };
+  } catch (error) {
+    return {
+      exitCode: processExitCode(error),
+      stdout: processOutput(error, "stdout"),
+      stderr: processOutput(error, "stderr"),
+    };
+  }
+}
+
+/** Removes the three variables the runtime locator requires from an environment. */
+function withoutLocatorPrerequisites(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const stripped: NodeJS.ProcessEnv = { ...env };
+  delete stripped.HERDR_PLUGIN_CONFIG_DIR;
+  delete stripped.HERDR_PLUGIN_STATE_DIR;
+  delete stripped.HERDR_SOCKET_PATH;
+  return stripped;
+}
+
+/** Reads and parses the locator published into a plugin config directory. */
+function readLocator(configDirectory: string): Record<string, unknown> {
+  return JSON.parse(
+    readFileSync(join(configDirectory, RUNTIME_LOCATOR_FILE_NAME), "utf8"),
+  ) as Record<string, unknown>;
 }
 
 function processExitCode(error: unknown): number {

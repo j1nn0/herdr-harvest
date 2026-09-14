@@ -17,6 +17,14 @@ platforms = ["linux", "macos", "windows"]
 [[build]]
 command = ["npm", "ci", "--omit=dev"]
 
+# Runs once for each enabled plugin after Herdr restores its session and API
+# socket: the runtime locator tells an external orchestrator which state
+# directory and socket the plugin is using, so discovery never has to guess
+# Herdr's internal layout. The event hook refreshes the same file on every run;
+# publication failures are non-fatal and the command always exits zero.
+[[startup]]
+command = ["node", "src/bin/register-runtime.ts"]
+
 # Fires on every pane agent status transition. The hook needs all of them: it
 # records the observed status per Herdr session and pane so it can tell a real
 # completion from an ordinary `idle`, and captures only the transitions that

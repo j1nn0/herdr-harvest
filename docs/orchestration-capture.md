@@ -9,11 +9,22 @@ fixer agents. The rest of Harvest, including the Result Inbox, is unaffected.
 
 ## Discovery
 
-The capture entrypoint is a plain script inside the plugin directory, not a
-declared plugin action, so it needs no Herdr session and no UI:
+An orchestrator discovers Harvest in four steps, and every path it uses comes
+from Herdr or from Harvest itself. No step derives a path from Herdr's internal
+plugin layout.
+
+### 1. Find the plugin root
 
 ```bash
-herdr plugin list --plugin j1nn0.herdr-harvest --json   # find the plugin root
+herdr plugin list --plugin j1nn0.herdr-harvest --json   # read plugin_root
+```
+
+The capture entrypoint is a plain script inside the plugin directory, not a
+declared plugin action, so it needs no Herdr session and no UI.
+
+### 2. Negotiate capabilities
+
+```bash
 cd <plugin root>
 node src/bin/capture.ts --capabilities
 ```
@@ -22,13 +33,41 @@ The script uses only Harvest's runtime dependencies and the Herdr plugin
 environment, so it runs from an installed or linked checkout without a build
 step. `--capabilities` reads nothing: no environment, no database, no Herdr.
 
+### 3. Read the runtime locator
+
+```bash
+herdr plugin config-dir j1nn0.herdr-harvest              # the config directory
+cat "<config dir>/orchestration-capture-runtime.json"    # the locator
+```
+
+`herdr plugin config-dir` prints the directory Herdr hands the plugin as
+`HERDR_PLUGIN_CONFIG_DIR`, and Harvest publishes the runtime locator there. See
+[Runtime locator](#runtime-locator) for the document and its staleness rules.
+
+### 4. Capture with the located state directory
+
+```bash
+cd <plugin root>
+HERDR_PLUGIN_STATE_DIR="<locator.stateDir>" node src/bin/capture.ts \
+  --pane <pane-id> \
+  --orchestration-id 2f6a3c1e-8b1d-4a30-9a4f-5b1c2d3e4f50 \
+  --orchestration-label "探索: fix the parser" \
+  --orchestration-role explorer
+```
+
+Passing the located `stateDir` explicitly points the capture at the same
+database the plugin's own hook writes to. `HARVEST_STATE_DIR` takes precedence
+over `HERDR_PLUGIN_STATE_DIR`, so unset it in the orchestrator's environment.
+Never derive the state directory from Herdr's internal plugin layout: the
+locator is the only supported source for it.
+
 ## Capability negotiation
 
 Before claiming anything, probe the entrypoint and check the protocol:
 
 ```console
 $ node src/bin/capture.ts --capabilities
-{"protocol":"harvest-capture","protocolVersion":1,"features":["orchestration-claim"],"roles":["explorer","fixer"]}
+{"protocol":"harvest-capture","protocolVersion":1,"features":["orchestration-claim","runtime-locator"],"roles":["explorer","fixer"]}
 ```
 
 The probe writes exactly one JSON line on stdout and exits `0`. It is answered
@@ -38,11 +77,57 @@ before any other argument handling and works with an empty environment.
 | ----------------- | -------------------------------------------------------------------- |
 | `protocol`        | Always `harvest-capture`.                                            |
 | `protocolVersion` | `1` for the shape described here.                                    |
-| `features`        | `orchestration-claim` when claims are supported.                     |
+| `features`        | Capabilities of this entrypoint: `orchestration-claim` and `runtime-locator`. |
 | `roles`           | Accepted `--orchestration-role` values, currently `explorer`, `fixer`. |
 
-Treat an unknown `protocolVersion` as incompatible, and require
-`features` to contain `orchestration-claim` before sending a claim.
+Treat an unknown `protocolVersion` as incompatible, and require `features` to
+contain `orchestration-claim` before sending a claim. `runtime-locator` means
+the plugin publishes the discovery document described next.
+
+## Runtime locator
+
+Harvest publishes a small discovery document so an orchestrator can find the
+plugin's state directory and the Herdr socket the plugin is attached to:
+
+```console
+$ cat "$(herdr plugin config-dir j1nn0.herdr-harvest)/orchestration-capture-runtime.json"
+{"protocol":"harvest-runtime-locator","protocolVersion":1,"pluginId":"j1nn0.herdr-harvest","stateDir":"/…/state/j1nn0.herdr-harvest","socketPath":"/…/herdr.sock","updatedAtMs":1750000000000}
+```
+
+| Field             | Meaning                                                              |
+| ----------------- | -------------------------------------------------------------------- |
+| `protocol`        | Always `harvest-runtime-locator`.                                    |
+| `protocolVersion` | `1` for the shape described here.                                    |
+| `pluginId`        | Always `j1nn0.herdr-harvest`.                                        |
+| `stateDir`        | Exactly the directory Herdr gave Harvest as `HERDR_PLUGIN_STATE_DIR`; the database is `<stateDir>/harvest.db`. Copied verbatim, never normalized. |
+| `socketPath`      | Exactly the Herdr socket Harvest observed as `HERDR_SOCKET_PATH`.    |
+| `updatedAtMs`     | Publication time in Unix milliseconds.                               |
+
+The document holds only those paths and a timestamp: no credentials, prompts,
+captured output, or agent identity.
+
+Harvest publishes the locator from its plugin `[[startup]]` command and refreshes
+it on every hook run. Each publication writes a temporary file next to the target
+and renames it over the previous document, so a reader sees either the previous
+complete document or the new one. Publication is skipped when Herdr did not
+provide a socket path, because a locator that cannot identify the live session
+would point captures at the wrong one.
+
+Treat the locator as a hint with an expiry check, never as a guarantee:
+
+- A missing locator, an unknown `protocolVersion`, or a `socketPath` that does not
+  match the Herdr server you are talking to means **integration unavailable** for
+  that server, not a capture failure. Harvest may simply not have run in this
+  session yet; retry after the next agent completion, or fall back to manual
+  capture.
+- A socket mismatch must never fail a capture. Pass `stateDir` explicitly to the
+  capture command and let it report its own status; the capture entrypoint never
+  reads the locator itself.
+- The state directory must come from the locator, or from the orchestrator's own
+  recorded configuration. It is never inferred from Herdr's internal layout.
+- An orchestration claim is still only ever the CLI options below. There are no
+  `HARVEST_ORCHESTRATION_*` environment variables, and the locator carries no
+  claim.
 
 ## Capturing and claiming
 
@@ -118,6 +203,8 @@ as a claim source, and no claim is ever derived from them:
 - native agent session ids or session paths
 - capture timestamps or ordering
 - prompt or output text parsed out of the captured content
+- environment variables, including any `HARVEST_ORCHESTRATION_*` name: a claim is
+  only ever the three CLI options, and the runtime locator carries no claim
 
 Automatic captures (`src/bin/hook.ts`) always record a NULL claim, and a NULL
 claim never blocks a capture: unclaimed results keep working exactly as they did

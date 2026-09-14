@@ -46,7 +46,7 @@ Exit codes:
 const CAPABILITIES = JSON.stringify({
   protocol: "harvest-capture",
   protocolVersion: 1,
-  features: ["orchestration-claim"],
+  features: ["orchestration-claim", "runtime-locator"],
   roles: ORCHESTRATION_ROLES,
 });
 
