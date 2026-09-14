@@ -468,3 +468,244 @@ describe("inbox service", () => {
     }
   });
 });
+
+describe("inbox service search", () => {
+  test("searches active results, excludes archived, and preserves active order", () => {
+    const { service, store } = makeService();
+    try {
+      const unreadOld = inserted(
+        store,
+        makeInput({ capturedAtMs: 100, rawText: "needle unread old" }),
+      );
+      const unreadNew = inserted(
+        store,
+        makeInput({ capturedAtMs: 300, rawText: "needle unread new" }),
+      );
+      const readOld = inserted(store, makeInput({ capturedAtMs: 200, rawText: "needle read old" }));
+      const readNew = inserted(store, makeInput({ capturedAtMs: 500, rawText: "needle read new" }));
+      const archived = inserted(
+        store,
+        makeInput({ capturedAtMs: 400, rawText: "needle archived" }),
+      );
+      store.markRead(readOld.id, 1_000);
+      store.markRead(readNew.id, 1_001);
+      store.archive(archived.id, 1_002);
+
+      assert.deepEqual(
+        service.list({ query: "needle" }).map((item) => item.id),
+        [unreadNew.id, unreadOld.id, readNew.id, readOld.id],
+      );
+      assert.deepEqual(
+        service.list({ mode: "active", query: "needle" }).map((item) => item.id),
+        [unreadNew.id, unreadOld.id, readNew.id, readOld.id],
+      );
+      assert.equal(
+        service.list({ query: "needle" }).some((item) => item.id === archived.id),
+        false,
+      );
+      assert.deepEqual(
+        service.list({ query: "needle" }).map((item) => item.archived),
+        [false, false, false, false],
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  test("searches archived results, excludes active, and preserves archived order", () => {
+    let now = 1_000;
+    const store = new SqliteResultStore(openDatabase(":memory:"));
+    const service = createInboxService({ store, clipboard: successfulClipboard(), now: () => now });
+    try {
+      const first = inserted(store, makeInput({ capturedAtMs: 10, rawText: "needle first" }));
+      const second = inserted(store, makeInput({ capturedAtMs: 20, rawText: "needle second" }));
+      const active = inserted(store, makeInput({ capturedAtMs: 30, rawText: "needle active" }));
+      now = 5_000;
+      service.archive(first.id);
+      now = 6_000;
+      service.archive(second.id);
+
+      const archived = service.list({ mode: "archived", query: "needle" });
+      assert.deepEqual(
+        archived.map((item) => item.id),
+        [second.id, first.id],
+      );
+      assert.deepEqual(
+        archived.map((item) => item.archived),
+        [true, true],
+      );
+      assert.equal(
+        archived.some((item) => item.id === active.id),
+        false,
+      );
+      assert.deepEqual(
+        service.list({ mode: "archived", query: "needle" }).map((item) => item.id),
+        service.list("archived").map((item) => item.id),
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  test("searches both collections in global capture order for the all scope", () => {
+    const { service, store } = makeService();
+    try {
+      const oldest = inserted(store, makeInput({ capturedAtMs: 100, rawText: "needle alpha" }));
+      const archivedOlder = inserted(
+        store,
+        makeInput({ capturedAtMs: 200, rawText: "needle beta" }),
+      );
+      const archivedNewer = inserted(
+        store,
+        makeInput({ capturedAtMs: 300, rawText: "needle gamma" }),
+      );
+      const newest = inserted(store, makeInput({ capturedAtMs: 400, rawText: "needle delta" }));
+      store.markRead(newest.id, 1_000);
+      store.archive(archivedOlder.id, 1_001);
+      store.archive(archivedNewer.id, 1_002);
+
+      assert.deepEqual(
+        service.list({ mode: "all", query: "needle" }).map((item) => item.id),
+        [newest.id, archivedNewer.id, archivedOlder.id, oldest.id],
+      );
+      assert.deepEqual(
+        service.list({ mode: "all", query: "needle" }).map((item) => item.archived),
+        [false, true, true, false],
+      );
+      // The active collection keeps its unread-first order, unlike the all scope.
+      assert.deepEqual(
+        service.list("active").map((item) => item.id),
+        [oldest.id, newest.id],
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  test("orders the all scope by descending capture time and id", () => {
+    const { service, store } = makeService();
+    try {
+      const capturedAtMs = 777;
+      const [first, second, third] = [
+        inserted(store, makeInput({ capturedAtMs, rawText: "tie one" })),
+        inserted(store, makeInput({ capturedAtMs, rawText: "tie two" })),
+        inserted(store, makeInput({ capturedAtMs, rawText: "tie three" })),
+      ];
+      const rows = [first, second, third];
+      store.archive(second.id, 1_000);
+
+      const expected = rows
+        .map((row) => row.id)
+        .sort()
+        .reverse();
+      assert.deepEqual(
+        service.list("all").map((item) => item.id),
+        expected,
+      );
+      assert.deepEqual(
+        service.list({ mode: "all", query: "tie" }).map((item) => item.id),
+        expected,
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  test("treats blank queries as no filter in every scope", () => {
+    const { service, store } = makeService();
+    try {
+      const active = inserted(store, makeInput({ rawText: "active" }));
+      const archived = inserted(store, makeInput({ rawText: "archived" }));
+      service.archive(archived.id);
+
+      assert.deepEqual(
+        service.list({ mode: "active", query: "   " }).map((item) => item.id),
+        [active.id],
+      );
+      assert.deepEqual(
+        service.list({ mode: "archived", query: "" }).map((item) => item.id),
+        [archived.id],
+      );
+      assert.deepEqual(
+        service
+          .list({ mode: "all", query: "\t\n" })
+          .map((item) => item.id)
+          .sort(),
+        [active.id, archived.id].sort(),
+      );
+      assert.deepEqual(
+        service.list({ query: "" }).map((item) => item.id),
+        service.list().map((item) => item.id),
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  test("returns nothing when no result matches the query", () => {
+    const { service, store } = makeService();
+    try {
+      inserted(store, makeInput({ rawText: "unrelated" }));
+
+      assert.deepEqual(service.list({ query: "missing" }), []);
+      assert.deepEqual(service.list({ mode: "all", query: "missing" }), []);
+      assert.deepEqual(service.list({ mode: "archived", query: "missing" }), []);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("searches metadata fields and the derived session short id", () => {
+    const { service, store } = makeService();
+    try {
+      const named = inserted(
+        store,
+        makeInput({ workspaceName: "workspace-needle", rawText: "unrelated" }),
+      );
+      const compact = inserted(
+        store,
+        makeInput({
+          agentSessionKind: "id",
+          agentSessionValue: "p-q-r-s-t-u",
+          rawText: "unrelated too",
+        }),
+      );
+
+      assert.deepEqual(
+        service.list({ query: "workspace-needle" }).map((item) => item.id),
+        [named.id],
+      );
+      assert.deepEqual(
+        service.list({ query: "pqrstu" }).map((item) => item.id),
+        [compact.id],
+      );
+      assert.deepEqual(
+        service.list({ query: "p-q-r-s-t-u" }).map((item) => item.id),
+        [compact.id],
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  test("keeps stored raw text byte-identical across a search", () => {
+    const { service, store } = makeService();
+    try {
+      const rawText = "cafe\u0301\n\n  Release 候補  \n";
+      const result = inserted(store, makeInput({ rawText }));
+
+      assert.deepEqual(
+        service.list({ query: "CAFÉ" }).map((item) => item.id),
+        [result.id],
+      );
+      assert.deepEqual(
+        service.list({ query: "候補" }).map((item) => item.id),
+        [result.id],
+      );
+      assert.equal(store.get(result.id)?.rawText, rawText);
+      assert.equal(service.open(result.id)?.rawText, rawText);
+    } finally {
+      store.close();
+    }
+  });
+});

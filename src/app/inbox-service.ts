@@ -3,6 +3,7 @@ import { ClipboardError } from "../clipboard/provider.ts";
 import type { HarvestResult } from "../domain/result.ts";
 import { preview as makePreview } from "../domain/result.ts";
 import type { ResultStore } from "../persistence/result-store.ts";
+import { isSearchQueryActive, matchesResultSearch } from "./result-search.ts";
 import { sessionShortId } from "./session-label.ts";
 
 export interface InboxItem {
@@ -28,8 +29,24 @@ export interface InboxDetail extends InboxItem {
 /** Which collection the inbox lists. Active is the default. */
 export type InboxMode = "active" | "archived";
 
+/**
+ * What a listing covers. "all" spans both collections in one global order,
+ * which the two-collection inbox toggle cannot represent on its own.
+ */
+export type InboxScope = InboxMode | "all";
+
+/** A scoped, optionally text-filtered inbox listing. */
+export interface InboxListOptions {
+  /** Collection to list; defaults to "active". */
+  mode?: InboxScope;
+  /** Literal text filter; blank or omitted lists the whole scope. */
+  query?: string;
+}
+
 export interface InboxPort {
-  list(mode?: InboxMode): InboxItem[];
+  /** `list("archived")` is shorthand for `list({ mode: "archived" })`. */
+  list(mode?: InboxScope): InboxItem[];
+  list(options: InboxListOptions): InboxItem[];
   open(id: string): InboxDetail | null;
   archive(id: string): boolean;
   restore(id: string): boolean;
@@ -42,7 +59,7 @@ export function createInboxService(deps: {
   now: () => number;
 }): InboxPort {
   return {
-    list: (mode) => listResults(deps.store, mode),
+    list: (request?: InboxScope | InboxListOptions) => listResults(deps.store, request),
     open: (id) => openResult(deps.store, id, deps.now),
     archive: (id) => archiveResult(deps.store, id, deps.now),
     restore: (id) => restoreResult(deps.store, id),
@@ -50,9 +67,53 @@ export function createInboxService(deps: {
   };
 }
 
-function listResults(store: ResultStore, mode: InboxMode | undefined): InboxItem[] {
-  const results = mode === "archived" ? store.listArchived() : store.list();
-  return results.map(toItem);
+function listResults(
+  store: ResultStore,
+  request: InboxScope | InboxListOptions | undefined,
+): InboxItem[] {
+  const { scope, query } = resolveListRequest(request);
+  const ordered = orderedResults(store, scope);
+  const matched = isSearchQueryActive(query)
+    ? ordered.filter((result) => matchesResultSearch(result, query))
+    : ordered;
+  return matched.map(toItem);
+}
+
+/** `list("archived")` and `list({ mode: "archived" })` describe the same request. */
+function resolveListRequest(request: InboxScope | InboxListOptions | undefined): {
+  scope: InboxScope;
+  query: string;
+} {
+  if (request === undefined || typeof request === "string") {
+    return { scope: request ?? "active", query: "" };
+  }
+  return { scope: request.mode ?? "active", query: request.query ?? "" };
+}
+
+function orderedResults(store: ResultStore, scope: InboxScope): HarvestResult[] {
+  switch (scope) {
+    case "active":
+      return store.list();
+    case "archived":
+      return store.listArchived();
+    case "all":
+      return [...store.list({ includeArchived: true })].sort(compareByCaptureDesc);
+  }
+}
+
+/**
+ * Global order for the "all" scope: newest capture first, then descending id.
+ * It is intentionally independent of the unread-first order the active
+ * collection uses.
+ */
+function compareByCaptureDesc(left: HarvestResult, right: HarvestResult): number {
+  if (left.capturedAtMs !== right.capturedAtMs) {
+    return right.capturedAtMs - left.capturedAtMs;
+  }
+  if (left.id === right.id) {
+    return 0;
+  }
+  return left.id < right.id ? 1 : -1;
 }
 
 function openResult(store: ResultStore, id: string, now: () => number): InboxDetail | null {

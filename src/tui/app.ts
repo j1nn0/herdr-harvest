@@ -1,10 +1,18 @@
 import { useApp, useInput, useStdout } from "ink";
 import React, { type FC, useEffect, useState } from "react";
-import type { InboxDetail, InboxItem, InboxMode, InboxPort } from "../app/inbox-service.ts";
+import type {
+  InboxDetail,
+  InboxItem,
+  InboxMode,
+  InboxPort,
+  InboxScope,
+} from "../app/inbox-service.ts";
+import { isSearchQueryActive } from "../app/result-search.ts";
 import type { CopyReport } from "../clipboard/provider.ts";
 import { ClipboardError } from "../clipboard/provider.ts";
 import {
   clampListOffset,
+  type InboxSearchView,
   InboxView,
   inboxViewportLines,
   listOffsetForCursor,
@@ -28,12 +36,30 @@ interface InboxPosition {
   listOffset: number;
 }
 
+/**
+ * One search session. `query` is the applied filter, while `draft` is only what
+ * the query line shows while editing, so typing never changes the visible
+ * results until Enter applies the draft. Keeping both in one value means
+ * entering, applying, cancelling, and scope cycling can never disagree about
+ * which of the two is current.
+ *
+ * `scope` is the search's own collection and deliberately does not touch
+ * `mode`, so Esc can always return to the collection the search started from.
+ */
+interface SearchState {
+  query: string;
+  draft: string;
+  scope: InboxScope;
+  editing: boolean;
+}
+
 export function createApp(port: InboxPort): FC {
   const HarvestApp: FC = () => {
     const { exit } = useApp();
     const { stdout } = useStdout();
     const [view, setView] = useState<View>("inbox");
     const [mode, setMode] = useState<InboxMode>("active");
+    const [search, setSearch] = useState<SearchState | null>(null);
     const [items, setItems] = useState<InboxItem[]>(() => port.list("active"));
     const [position, setPosition] = useState<InboxPosition>({ cursor: 0, listOffset: 0 });
     const [detail, setDetail] = useState<InboxDetail | null>(null);
@@ -94,8 +120,83 @@ export function createApp(port: InboxPort): FC {
       setStatus(null);
     };
 
+    /**
+     * The port call behind every refresh: a search session lists its own scope
+     * and applied query, while the plain inbox lists the current collection.
+     */
+    const listFromPort = (): InboxItem[] =>
+      search === null ? port.list(mode) : port.list({ mode: search.scope, query: search.query });
+
+    /**
+     * Search-session switches replace the whole list like a collection switch,
+     * so the cursor and list offset reset together and a stale status is
+     * cleared. Passing null leaves search entirely and shows the normal
+     * collection, which Esc must always be able to restore.
+     */
+    const showSearch = (next: SearchState | null): void => {
+      setSearch(next);
+      setItems(
+        next === null ? port.list(mode) : port.list({ mode: next.scope, query: next.query }),
+      );
+      setPosition({ cursor: 0, listOffset: 0 });
+      setStatus(null);
+    };
+
+    /** The first entry opens on the collection in view; later ones keep the applied query. */
+    const beginSearchEdit = (): void => {
+      const current = search ?? { query: "", draft: "", scope: mode, editing: false };
+      setSearch({ ...current, editing: true, draft: current.query });
+    };
+
+    /** Draft edits go through one queued updater so batched keys still apply in order. */
+    const editDraft = (update: (draft: string) => string): void => {
+      setSearch((current) =>
+        current === null || !current.editing
+          ? current
+          : { ...current, draft: update(current.draft) },
+      );
+    };
+
+    /** Enter applies the draft. A blank draft is not a filter, so it leaves search. */
+    const applySearchEdit = (): void => {
+      if (search === null) {
+        return;
+      }
+      if (!isSearchQueryActive(search.draft)) {
+        showSearch(null);
+        return;
+      }
+      showSearch({ ...search, query: search.draft, draft: search.draft, editing: false });
+    };
+
+    /** Esc reverts the draft to the applied query, or leaves search when none was applied. */
+    const cancelSearchEdit = (): void => {
+      if (search === null) {
+        return;
+      }
+      if (!isSearchQueryActive(search.query)) {
+        showSearch(null);
+        return;
+      }
+      setSearch({ ...search, editing: false, draft: search.query });
+    };
+
+    /** Esc from an applied search returns to the collection the search started from. */
+    const clearSearch = (): void => {
+      showSearch(null);
+    };
+
+    const cycleSearchScope = (): void => {
+      if (search === null) {
+        return;
+      }
+      const scope: InboxScope =
+        search.scope === "active" ? "archived" : search.scope === "archived" ? "all" : "active";
+      showSearch({ ...search, scope });
+    };
+
     const refreshItems = (hasStatus = status !== null): InboxItem[] => {
-      const nextItems = port.list(mode);
+      const nextItems = listFromPort();
       const nextCursor = clampCursor(cursor, nextItems.length);
       const nextCapacity = inboxViewportLines(
         stdout.rows,
@@ -205,13 +306,57 @@ export function createApp(port: InboxPort): FC {
       }
 
       if (view === "inbox") {
-        // Tab only toggles collections from the inbox, so a detail always
-        // returns to the collection it was opened from.
-        if (key.tab && !key.shift) {
-          switchMode(mode === "active" ? "archived" : "active");
+        if (search?.editing) {
+          // Query editing owns the keyboard: printable input becomes text, so
+          // q, a, r, y, j, k, space, and / never reach the action keys below.
+          // Enter applies the draft and Esc cancels it. Tab stays out of the
+          // way here — the scope cycle belongs to the applied search, because
+          // a draft cannot know which collection it will run against yet.
+          if (key.return || input === "\r") {
+            applySearchEdit();
+            return;
+          }
+          if (key.escape || input === "\u001b") {
+            cancelSearchEdit();
+            return;
+          }
+          if (key.backspace || key.delete || input === "\u007f") {
+            editDraft((draft) => draft.slice(0, -1));
+            return;
+          }
+          if (!key.ctrl && !key.meta && isPrintableText(input) && !isMouseReport(input)) {
+            editDraft((draft) => draft + input);
+          }
           return;
         }
-        if (input === "q" || key.escape || input === "\u001b") {
+
+        // Tab only toggles collections from the inbox, so a detail always
+        // returns to the collection it was opened from. An applied search
+        // cycles its own scope instead, because "all" is not a collection the
+        // plain inbox can show.
+        if (key.tab && !key.shift) {
+          if (search === null) {
+            switchMode(mode === "active" ? "archived" : "active");
+          } else {
+            cycleSearchScope();
+          }
+          return;
+        }
+        if (input === "/") {
+          beginSearchEdit();
+          return;
+        }
+        if (input === "q") {
+          exit();
+          return;
+        }
+        if (key.escape || input === "\u001b") {
+          // The first Esc clears an applied search; once the inbox is plain
+          // again it quits exactly as it did before search existed.
+          if (search !== null) {
+            clearSearch();
+            return;
+          }
           exit();
           return;
         }
@@ -235,30 +380,35 @@ export function createApp(port: InboxPort): FC {
           openSelected();
           return;
         }
+        const selected = items[cursor];
         if (input === "y") {
-          const item = items[cursor];
-          if (item === undefined) {
+          if (selected === undefined) {
             setStatus({ text: "There are no results to copy.", error: true });
           } else {
-            copy(item.id, undefined);
+            copy(selected.id, undefined);
           }
           return;
         }
-        if (input === "a" && mode === "active") {
-          const item = items[cursor];
-          if (item === undefined) {
+
+        // A search can show active and archived rows together, so the selected
+        // row decides which action applies. Without a search the collection
+        // already guarantees the same answer, which keeps v0.2.0 key behavior.
+        const archiveAllowed = search === null ? mode === "active" : selected?.archived === false;
+        const restoreAllowed = search === null ? mode === "archived" : selected?.archived === true;
+
+        if (input === "a" && archiveAllowed) {
+          if (selected === undefined) {
             setStatus({ text: "There are no results to archive.", error: true });
           } else {
-            archive(item.id, false);
+            archive(selected.id, false);
           }
         }
 
-        if (input === "r" && mode === "archived") {
-          const item = items[cursor];
-          if (item === undefined) {
+        if (input === "r" && restoreAllowed) {
+          if (selected === undefined) {
             setStatus({ text: "There are no results to restore.", error: true });
           } else {
-            restore(item.id, false);
+            restore(selected.id, false);
           }
         }
         return;
@@ -325,12 +475,24 @@ export function createApp(port: InboxPort): FC {
       });
     }
 
+    const searchView: InboxSearchView | undefined =
+      search === null
+        ? undefined
+        : {
+            query: search.query,
+            text: search.editing ? search.draft : search.query,
+            scope: search.scope,
+            editing: search.editing,
+            applied: isSearchQueryActive(search.query),
+          };
+
     return h(InboxView, {
       items,
       cursor,
       width: inboxWidth,
       mode,
       status,
+      search: searchView,
       offset: listOffset,
       limit: inboxCapacity,
       onOpen: openSelected,
@@ -377,6 +539,36 @@ function clampCursor(cursor: number, itemCount: number): number {
     return 0;
   }
   return Math.min(Math.max(0, cursor), itemCount - 1);
+}
+
+/**
+ * Text that can be typed into the query line. Control bytes carry meaning (Tab,
+ * Enter, Esc, DEL, Ctrl+letter) and never become query text, while space and
+ * multi-character pastes are kept whole.
+ */
+function isPrintableText(input: string): boolean {
+  if (input.length === 0) {
+    return false;
+  }
+
+  for (const character of input) {
+    const codePoint = character.codePointAt(0);
+    if (codePoint === undefined || codePoint < 0x20 || (codePoint >= 0x7f && codePoint <= 0x9f)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+/**
+ * SGR mouse reports reach `useInput` as `[<Cb;x;yM` and are already classified
+ * for wheels before key handling. Any other report (press, release, drag) is
+ * still not typed text, so it must never enter the query line; see mouse.ts for
+ * the reporting encoding.
+ */
+function isMouseReport(input: string): boolean {
+  return /^\[<\d+;\d+;\d+[Mm]$/.test(input);
 }
 
 /**

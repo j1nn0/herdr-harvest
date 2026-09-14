@@ -1,13 +1,31 @@
 import { Box, Text } from "ink";
 import React, { type FC } from "react";
 
-import type { InboxItem, InboxMode } from "../app/inbox-service.ts";
+import type { InboxItem, InboxMode, InboxScope } from "../app/inbox-service.ts";
 
 const h = React.createElement;
 
 export interface StatusMessage {
   text: string;
   error: boolean;
+}
+
+/**
+ * Search-session view state. `query` is what the visible list was filtered by,
+ * while `text` is what the query line shows: the live draft while editing, the
+ * applied query otherwise. They differ exactly while the user is typing.
+ */
+export interface InboxSearchView {
+  /** Applied query; blank before the first draft is applied. */
+  query: string;
+  /** Query-line text. */
+  text: string;
+  /** Collection the search covers, including "all". */
+  scope: InboxScope;
+  /** True while the query line is being edited. */
+  editing: boolean;
+  /** True when an applied query is filtering the list right now. */
+  applied: boolean;
 }
 
 export interface InboxViewProps {
@@ -18,6 +36,7 @@ export interface InboxViewProps {
   offset?: number;
   limit?: number;
   status?: StatusMessage | null;
+  search?: InboxSearchView;
   onOpen: () => void;
   onCopy: () => void;
   onArchive: () => void;
@@ -31,6 +50,8 @@ const ROW_SEPARATOR = "  ";
 const NARROW_SEPARATOR = " ";
 const NO_SEPARATOR = "";
 const ELLIPSIS = "…";
+const SEARCH_CURSOR = "_";
+const SEARCH_FOOTER = "/ edit · Tab scope · Esc clear · ↑/↓ move · Enter open · y copy";
 
 const DEFAULT_INBOX_ROWS = 24;
 /** Chrome Text nodes use wrap="truncate" so each fixed line stays one physical row. */
@@ -86,6 +107,7 @@ export const InboxView: FC<InboxViewProps> = ({
   offset = 0,
   limit,
   status = null,
+  search,
 }) => {
   const contentWidth = contentWidthFor(width);
   const rowOffset = Number.isFinite(offset) ? Math.max(0, Math.floor(offset)) : 0;
@@ -110,23 +132,10 @@ export const InboxView: FC<InboxViewProps> = ({
           ),
         );
 
-  const resultCount = `${items.length} result${items.length === 1 ? "" : "s"}`;
-  const title =
-    mode === "archived"
-      ? `Harvest Archived Results · ${resultCount}`
-      : `Harvest Result Inbox · ${resultCount}`;
-  const subtitle =
-    mode === "archived"
-      ? "Newest archived first; select one to inspect it."
-      : "Unread results stay at the top; select one to inspect it.";
-  const emptyState =
-    mode === "archived"
-      ? "No archived results."
-      : "No results yet. Captured agent output will appear here.";
-  const footer =
-    mode === "archived"
-      ? "↑/↓ or k/j move · PageUp/PageDown page · Enter open · y copy · r restore · Tab active · q/Esc quit"
-      : "↑/↓ or k/j move · PageUp/PageDown page · Enter open · y copy · a archive · Tab archived · q/Esc quit";
+  const title = inboxTitle(mode, search, items.length);
+  const subtitle = inboxSubtitle(mode, search);
+  const emptyState = inboxEmptyState(mode, search);
+  const footer = inboxFooter(mode, search);
 
   return h(
     Box,
@@ -139,6 +148,68 @@ export const InboxView: FC<InboxViewProps> = ({
     h(Text, { dimColor: true, wrap: "truncate" }, footer),
   );
 };
+
+/** Title line for the current collection or search session. */
+function inboxTitle(
+  mode: InboxMode,
+  search: InboxSearchView | undefined,
+  itemCount: number,
+): string {
+  if (search !== undefined) {
+    const scope = searchScopeLabel(search.scope);
+    if (!search.applied) {
+      return `Harvest Result Search · ${scope}`;
+    }
+    return `Harvest Result Search · ${scope} · ${itemCount} match${itemCount === 1 ? "" : "es"}`;
+  }
+
+  const resultCount = `${itemCount} result${itemCount === 1 ? "" : "s"}`;
+  return mode === "archived"
+    ? `Harvest Archived Results · ${resultCount}`
+    : `Harvest Result Inbox · ${resultCount}`;
+}
+
+/** Subtitle line: the query line while searching, the collection hint otherwise. */
+function inboxSubtitle(mode: InboxMode, search: InboxSearchView | undefined): string {
+  if (search !== undefined) {
+    return `Search: ${search.text}${search.editing ? SEARCH_CURSOR : ""}`;
+  }
+
+  return mode === "archived"
+    ? "Newest archived first; select one to inspect it."
+    : "Unread results stay at the top; select one to inspect it.";
+}
+
+function inboxEmptyState(mode: InboxMode, search: InboxSearchView | undefined): string {
+  if (search?.applied) {
+    return `No results match "${search.query}"`;
+  }
+
+  return mode === "archived"
+    ? "No archived results."
+    : "No results yet. Captured agent output will appear here.";
+}
+
+function inboxFooter(mode: InboxMode, search: InboxSearchView | undefined): string {
+  if (search !== undefined) {
+    return SEARCH_FOOTER;
+  }
+
+  return mode === "archived"
+    ? "↑/↓ or k/j move · PageUp/PageDown page · Enter open · y copy · r restore · Tab active · q/Esc quit"
+    : "↑/↓ or k/j move · PageUp/PageDown page · Enter open · y copy · a archive · Tab archived · q/Esc quit";
+}
+
+function searchScopeLabel(scope: InboxScope): string {
+  switch (scope) {
+    case "active":
+      return "Active";
+    case "archived":
+      return "Archived";
+    case "all":
+      return "All";
+  }
+}
 
 export function formatInboxRow(item: InboxItem, width: number, nowMs = Date.now()): string {
   const limit = normalizedWidth(width);

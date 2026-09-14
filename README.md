@@ -181,6 +181,16 @@ metadata lines disappear once there is no room for them.
 
 `Tab` switches between the Active and Archived collections. Archived results are ordered by the time they were archived, newest first, so the result you just archived is the one at the top. `r` puts the selected archived result back into the Active collection, from the list or from its detail view.
 
+### Searching results
+
+Press `/` to start a search, type a query, and press `Enter` to apply it. With a search applied, `Tab` cycles the scope through `Active`, `Archived`, and `All`, and `/` edits the same query again. `Esc` cancels an edit, or clears an applied search and returns to the collection the search started from.
+
+- The query is a plain literal substring: `%`, `_`, `*`, `[`, and `\` are ordinary characters, and nothing in the query is interpreted as syntax.
+- Matching covers the captured output and the preview the row shows, plus the result's metadata: agent name and kind, workspace name and id, pane name and id, Herdr session label and key, the native agent session, the displayed session id, and the capture source.
+- Both sides are normalized to Unicode NFC and compared ASCII case-insensitively, so `RELEASE` matches `Release` and a decomposed `café` matches a precomposed one. Japanese matches literally. No other folding is applied: fullwidth, hiragana/katakana, and voiced-mark differences that NFC itself does not unify stay distinct, and the stored output is never rewritten.
+- `Active` searches keep the inbox's unread-first order, `Archived` searches stay newest-archived first, and `All` searches are ordered newest capture first regardless of read state.
+- Under `All`, `a` and `r` follow the selected row: `a` archives an active row and `r` restores an archived one.
+
 ### Copying is fail-visible
 
 Harvest tries a real system clipboard tool first (`pbcopy`, `clip.exe`, `wl-copy`, `xclip`, or `xsel`), then falls back to OSC 52.

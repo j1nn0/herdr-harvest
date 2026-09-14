@@ -2,9 +2,19 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { render } from "ink-testing-library";
 import React from "react";
-import type { InboxDetail, InboxItem, InboxPort } from "../src/app/inbox-service.ts";
+import type {
+  InboxDetail,
+  InboxItem,
+  InboxListOptions,
+  InboxPort,
+  InboxScope,
+} from "../src/app/inbox-service.ts";
+import { createInboxService } from "../src/app/inbox-service.ts";
 import type { CopyReport } from "../src/clipboard/provider.ts";
 import { ClipboardError } from "../src/clipboard/provider.ts";
+import type { CaptureInput, HarvestResult } from "../src/domain/result.ts";
+import { openDatabase } from "../src/persistence/database.ts";
+import { SqliteResultStore } from "../src/persistence/result-store.ts";
 import { createApp, formatBytes } from "../src/tui/app.ts";
 import {
   clampListOffset,
@@ -61,6 +71,66 @@ function makeDetail(item: InboxItem, rawText = `first-${item.id}\nsecond-${item.
   };
 }
 
+/** Capture input with the stable defaults the service tests use. */
+function makeCaptureInput(overrides: Partial<CaptureInput> = {}): CaptureInput {
+  return {
+    capturedAtMs: 1_000,
+    workspaceId: "workspace-id",
+    workspaceName: "Workspace name",
+    tabId: "tab-id",
+    paneId: "pane-id",
+    paneName: "Pane name",
+    agentName: "Agent name",
+    agentKind: "terminal",
+    agentSessionKind: "id",
+    agentSessionValue: "session-id",
+    herdrSessionKey: "/tmp/herdr/default.sock",
+    herdrSessionLabel: "default",
+    captureSource: "recent-unwrapped",
+    captureLineCount: 3,
+    rawText: "captured output",
+    ...overrides,
+  };
+}
+
+function insertResult(store: SqliteResultStore, input: CaptureInput): HarvestResult {
+  const outcome = store.insert(input);
+  assert.equal(outcome.status, "inserted");
+  if (outcome.status !== "inserted") {
+    throw new Error("Expected an inserted result.");
+  }
+  return outcome.result;
+}
+
+/**
+ * Fixture-only search: a real port filters the stored result, while this one
+ * only holds mapped InboxItems, so it matches the identifiers a test can set
+ * with the same literal NFC + lowercase semantics as the service matcher.
+ */
+function fixtureMatches(item: InboxItem, needle: string): boolean {
+  return [item.agentLabel, item.preview, item.id].some((field) =>
+    field.normalize("NFC").toLowerCase().includes(needle),
+  );
+}
+
+function fixtureInScope(item: InboxItem, scope: InboxScope): boolean {
+  if (scope === "all") {
+    return true;
+  }
+  return scope === "archived" ? item.archived : !item.archived;
+}
+
+/** Mirrors the service's all-scope order: capture time, then descending id. */
+function compareFixtureCapture(left: InboxItem, right: InboxItem): number {
+  if (left.capturedAtMs !== right.capturedAtMs) {
+    return right.capturedAtMs - left.capturedAtMs;
+  }
+  if (left.id === right.id) {
+    return 0;
+  }
+  return left.id < right.id ? 1 : -1;
+}
+
 function makeFixture(items: InboxItem[], options: FixtureOptions = {}): Fixture {
   const members = [...items];
   const calls = { opened: [], archived: [], restored: [], copied: [] } as Fixture["calls"];
@@ -75,8 +145,16 @@ function makeFixture(items: InboxItem[], options: FixtureOptions = {}): Fixture 
   };
 
   const port: InboxPort = {
-    list: (mode) =>
-      members.filter((item) => (mode === "archived" ? item.archived : !item.archived)),
+    list: (request?: InboxScope | InboxListOptions) => {
+      const options =
+        request === undefined || typeof request === "string" ? { mode: request } : request;
+      const scope = options.mode ?? "active";
+      const needle = (options.query ?? "").normalize("NFC").toLowerCase();
+      const scoped = members.filter((item) => fixtureInScope(item, scope));
+      const matched =
+        needle.trim().length === 0 ? scoped : scoped.filter((item) => fixtureMatches(item, needle));
+      return scope === "all" ? [...matched].sort(compareFixtureCapture) : matched;
+    },
     open: (id) => {
       calls.opened.push(id);
       return detailFor(id);
@@ -1068,6 +1146,619 @@ describe("inbox collections", () => {
       assert.equal(hasAgent(frame, "arch-one"), true);
     } finally {
       instance.unmount();
+    }
+  });
+});
+
+describe("inbox search", () => {
+  test("edits a query with / and cancels the draft with Esc", async () => {
+    const fixture = makeFixture([makeItem("alpha"), makeArchivedItem("beta")]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      await sendInput(instance, "/");
+      let frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Result Search · Active/);
+      assert.match(frame, /Search: _/);
+      assert.match(frame, /\/ edit · Tab scope · Esc clear/);
+
+      await sendInput(instance, "al");
+      frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Search: al_/);
+      // Typing does not filter until Enter: the collection is still listed whole.
+      assert.equal(hasAgent(frame, "alpha"), true);
+
+      // Terminals send DEL for Backspace.
+      await sendInput(instance, "\u007f");
+      frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Search: a_/);
+
+      // Esc cancels a draft that was never applied, leaving search entirely.
+      await sendInput(instance, "\u001b");
+      frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Result Inbox · 1 result/);
+      assert.doesNotMatch(frame, /Search:/);
+      assert.match(frame, /Unread results stay at the top/);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("treats action keys as query text while editing", async () => {
+    const fixture = makeFixture([makeItem("alpha"), makeArchivedItem("beta")]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      await sendInput(instance, "/");
+      for (const chunk of ["q", "a", "r", "y", "j", "k", "/", " "]) {
+        await sendInput(instance, chunk);
+      }
+
+      const frame = instance.lastFrame() ?? "";
+      assert.equal(frame.includes("Search: qaryjk/ _"), true);
+      assert.deepEqual(fixture.calls, { opened: [], archived: [], restored: [], copied: [] });
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("keeps mouse reports out of the query while editing", async () => {
+    const fixture = makeFixture([makeItem("alpha")]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      await sendInput(instance, "/");
+      // Press, release, and drag reports are not typed text and not actions.
+      await sendInput(instance, "\u001B[<0;10;5M");
+      await sendInput(instance, "\u001B[<0;10;5m");
+      await sendInput(instance, "\u001B[<32;11;5M");
+
+      const frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Search: _/);
+      assert.equal(hasAgent(frame, "alpha"), true);
+      assert.deepEqual(fixture.calls.archived, []);
+      assert.deepEqual(fixture.calls.opened, []);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("applies a search with Enter, filters the list, and resets the cursor", async () => {
+    const fixture = makeFixture([
+      makeItem("alpha-one"),
+      makeItem("alpha-two"),
+      makeItem("beta-one"),
+    ]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      await sendInput(instance, "j");
+      await sendInput(instance, "/");
+      await sendInput(instance, "alpha");
+      await sendInput(instance, "\r");
+
+      const frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Result Search · Active · 2 matches/);
+      assert.match(frame, /Search: alpha/);
+      assert.equal(hasAgent(frame, "alpha-one"), true);
+      assert.equal(hasAgent(frame, "alpha-two"), true);
+      assert.equal(hasAgent(frame, "beta-one"), false);
+
+      // The applied search restarted the cursor on the first match.
+      await sendInput(instance, "\r");
+      assert.deepEqual(fixture.calls.opened, ["alpha-one"]);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("keeps navigation, paging, the wheel, copy, and open working under a search", async () => {
+    const items = Array.from({ length: 30 }, (_, index) =>
+      makeItem(`needle-${String(index).padStart(2, "0")}`),
+    );
+    const fixture = makeFixture([...items, makeItem("other")]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      setTerminalSize(instance, 80, 10);
+      await sendInput(instance, "/");
+      await sendInput(instance, "needle");
+      await sendInput(instance, "\r");
+
+      // 10 terminal rows minus 3 chrome rows and 2 metadata rows leave 5 rows.
+      let frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Result Search · Active · 30 matches/);
+      assert.equal(hasAgent(frame, "needle-00"), true);
+      assert.equal(hasAgent(frame, "needle-04"), true);
+      assert.equal(hasAgent(frame, "needle-05"), false);
+      assert.equal(hasAgent(frame, "other"), false);
+
+      // Arrows and vi keys move the selection: down, down, up leaves row 1
+      // selected, which opening proves, and returning keeps the search.
+      await sendInput(instance, "\u001B[B");
+      await sendInput(instance, "j");
+      await sendInput(instance, "k");
+      await sendInput(instance, "\r");
+      assert.deepEqual(fixture.calls.opened, ["needle-01"]);
+      await sendInput(instance, "\u001B");
+      assert.match(instance.lastFrame() ?? "", /Harvest Result Search · Active · 30 matches/);
+
+      // The arrow-up step returns the selection to the first match.
+      await sendInput(instance, "\u001B[A");
+      await sendInput(instance, "\r");
+      assert.deepEqual(fixture.calls.opened, ["needle-01", "needle-00"]);
+      await sendInput(instance, "\u001B");
+
+      await sendInput(instance, "\u001B[6~");
+      frame = instance.lastFrame() ?? "";
+      assert.equal(hasAgent(frame, "needle-00"), false);
+      assert.equal(hasAgent(frame, "needle-05"), true);
+      assert.equal(hasAgent(frame, "needle-06"), false);
+
+      await sendInput(instance, "\u001B[5~");
+      frame = instance.lastFrame() ?? "";
+      assert.equal(hasAgent(frame, "needle-00"), true);
+      assert.equal(hasAgent(frame, "needle-05"), false);
+
+      await sendInput(instance, "\u001B[<65;10;5M");
+      await sendInput(instance, "y");
+      assert.deepEqual(fixture.calls.copied, ["needle-03"]);
+
+      await sendInput(instance, "\r");
+      assert.deepEqual(fixture.calls.opened, ["needle-01", "needle-00", "needle-03"]);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("cycles the search scope with Tab while preserving the query", async () => {
+    const fixture = makeFixture([
+      makeItem("alpha-one"),
+      makeItem("alpha-two"),
+      makeArchivedItem("alpha-archived"),
+      makeItem("beta-one"),
+    ]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      await sendInput(instance, "/");
+      await sendInput(instance, "alpha");
+      await sendInput(instance, "\r");
+      let frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Result Search · Active · 2 matches/);
+      assert.equal(hasAgent(frame, "alpha-archived"), false);
+
+      // Select the second match, then switch scope: the cursor must reset.
+      await sendInput(instance, "j");
+      await sendInput(instance, "\t");
+      frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Result Search · Archived · 1 match/);
+      assert.match(frame, /Search: alpha/);
+      assert.equal(hasAgent(frame, "alpha-archived"), true);
+      assert.equal(hasAgent(frame, "alpha-one"), false);
+
+      // Opening and returning keeps the same search, scope, and results.
+      await sendInput(instance, "\r");
+      assert.deepEqual(fixture.calls.opened, ["alpha-archived"]);
+      await sendInput(instance, "\u001b");
+      frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Result Search · Archived · 1 match/);
+      assert.match(frame, /Search: alpha/);
+      assert.equal(hasAgent(frame, "alpha-archived"), true);
+
+      await sendInput(instance, "\t");
+      frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Result Search · All · 3 matches/);
+      assert.equal(hasAgent(frame, "alpha-one"), true);
+      assert.equal(hasAgent(frame, "alpha-two"), true);
+      assert.equal(hasAgent(frame, "alpha-archived"), true);
+      assert.equal(hasAgent(frame, "beta-one"), false);
+
+      await sendInput(instance, "\t");
+      frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Result Search · Active · 2 matches/);
+      assert.equal(hasAgent(frame, "alpha-archived"), false);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("keeps plain Tab switching collections once the search is cleared", async () => {
+    const fixture = makeFixture([makeItem("alpha"), makeArchivedItem("beta")]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      await sendInput(instance, "/");
+      await sendInput(instance, "alpha");
+      await sendInput(instance, "\r");
+      assert.match(instance.lastFrame() ?? "", /Harvest Result Search · Active · 1 match/);
+
+      await sendInput(instance, "\u001b");
+      let frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Result Inbox · 1 result/);
+      assert.doesNotMatch(frame, /Search:/);
+
+      // Plain Tab still toggles the two collections and never reaches "all".
+      await sendInput(instance, "\t");
+      frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Archived Results · 1 result/);
+      assert.equal(hasAgent(frame, "beta"), true);
+
+      await sendInput(instance, "\t");
+      frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Result Inbox · 1 result/);
+      assert.doesNotMatch(frame, /Harvest Result Search/);
+      assert.doesNotMatch(frame, /Search:/);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("leaves search when Enter applies a blank query", async () => {
+    const fixture = makeFixture([makeItem("alpha"), makeArchivedItem("beta")]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      await sendInput(instance, "/");
+      await sendInput(instance, "   ");
+      await sendInput(instance, "\r");
+
+      const frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Result Inbox · 1 result/);
+      assert.doesNotMatch(frame, /Search:/);
+      assert.doesNotMatch(frame, /No results match/);
+      assert.equal(hasAgent(frame, "alpha"), true);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("shows the search empty state for a query with no matches", async () => {
+    const fixture = makeFixture([makeItem("alpha")]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      await sendInput(instance, "/");
+      await sendInput(instance, "zzz");
+      await sendInput(instance, "\r");
+
+      const frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Result Search · Active · 0 matches/);
+      assert.match(frame, /No results match "zzz"/);
+      assert.doesNotMatch(frame, /No results yet/);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("archives matches out of an active search and clamps the cursor", async () => {
+    const fixture = makeFixture([
+      makeItem("needle-01"),
+      makeItem("needle-02"),
+      makeItem("needle-03"),
+      makeItem("other"),
+    ]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      await sendInput(instance, "/");
+      await sendInput(instance, "needle");
+      await sendInput(instance, "\r");
+      assert.match(instance.lastFrame() ?? "", /Harvest Result Search · Active · 3 matches/);
+
+      await sendInput(instance, "j");
+      await sendInput(instance, "a");
+      assert.deepEqual(fixture.calls.archived, ["needle-02"]);
+      let frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Result Search · Active · 2 matches/);
+      assert.equal(hasAgent(frame, "needle-01"), true);
+      assert.equal(hasAgent(frame, "needle-02"), false);
+      assert.equal(hasAgent(frame, "needle-03"), true);
+
+      // The cursor clamped onto the row that followed the archived one.
+      await sendInput(instance, "a");
+      assert.deepEqual(fixture.calls.archived, ["needle-02", "needle-03"]);
+      frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Result Search · Active · 1 match/);
+      assert.equal(hasAgent(frame, "needle-01"), true);
+
+      // Archiving the only match empties the search and shows the empty state.
+      await sendInput(instance, "a");
+      assert.deepEqual(fixture.calls.archived, ["needle-02", "needle-03", "needle-01"]);
+      frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Result Search · Active · 0 matches/);
+      assert.match(frame, /No results match "needle"/);
+      assert.equal(agentRows(frame).length, 0);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("restores matches out of an archived search and clamps the cursor", async () => {
+    const fixture = makeFixture([
+      makeItem("needle-active"),
+      makeArchivedItem("needle-arch-01"),
+      makeArchivedItem("needle-arch-02"),
+    ]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      // The entry scope follows the collection the search starts from.
+      await sendInput(instance, "\t");
+      assert.match(instance.lastFrame() ?? "", /Harvest Archived Results · 2 results/);
+      await sendInput(instance, "/");
+      await sendInput(instance, "needle");
+      await sendInput(instance, "\r");
+      let frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Result Search · Archived · 2 matches/);
+      assert.equal(hasAgent(frame, "needle-active"), false);
+
+      await sendInput(instance, "j");
+      await sendInput(instance, "r");
+      assert.deepEqual(fixture.calls.restored, ["needle-arch-02"]);
+      frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Result Search · Archived · 1 match/);
+      assert.equal(hasAgent(frame, "needle-arch-01"), true);
+      assert.equal(hasAgent(frame, "needle-arch-02"), false);
+
+      await sendInput(instance, "r");
+      assert.deepEqual(fixture.calls.restored, ["needle-arch-02", "needle-arch-01"]);
+      frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Result Search · Archived · 0 matches/);
+      assert.match(frame, /No results match "needle"/);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("keys archive and restore off the row under the all scope", async () => {
+    const fixture = makeFixture([makeItem("needle-active"), makeArchivedItem("needle-arch")]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      await sendInput(instance, "/");
+      await sendInput(instance, "needle");
+      await sendInput(instance, "\r");
+      await sendInput(instance, "\t");
+      await sendInput(instance, "\t");
+
+      // Equal capture times order by id, so the archived row comes first and
+      // the visible list mixes both collections.
+      let frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Result Search · All · 2 matches/);
+      assert.equal(hasAgent(frame, "needle-arch"), true);
+      assert.equal(hasAgent(frame, "needle-active"), true);
+
+      // The archived row restores; "a" on it is ignored.
+      await sendInput(instance, "a");
+      assert.deepEqual(fixture.calls.archived, []);
+      assert.deepEqual(fixture.calls.restored, []);
+      await sendInput(instance, "r");
+      assert.deepEqual(fixture.calls.restored, ["needle-arch"]);
+      frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Result Search · All · 2 matches/);
+      assert.equal(hasAgent(frame, "needle-arch"), true);
+
+      // The row stayed in the all scope with its archive state flipped, so now
+      // "a" archives it again.
+      await sendInput(instance, "a");
+      assert.deepEqual(fixture.calls.archived, ["needle-arch"]);
+      assert.deepEqual(fixture.calls.restored, ["needle-arch"]);
+      assert.equal(hasAgent(instance.lastFrame() ?? "", "needle-arch"), true);
+
+      // Same rule on the active row: "r" is ignored and "a" archives it.
+      await sendInput(instance, "j");
+      await sendInput(instance, "r");
+      assert.deepEqual(fixture.calls.restored, ["needle-arch"]);
+      await sendInput(instance, "a");
+      assert.deepEqual(fixture.calls.archived, ["needle-arch", "needle-active"]);
+      assert.match(instance.lastFrame() ?? "", /Harvest Result Search · All · 2 matches/);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("keeps search chrome to one physical row per line at narrow widths", async () => {
+    const items = Array.from({ length: 30 }, (_, index) =>
+      makeItem(`search-${String(index).padStart(2, "0")}`),
+    );
+    const fixture = makeFixture(items);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      setTerminalSize(instance, 40, 12);
+      await sendInput(instance, "/");
+      await sendInput(instance, "search");
+      await sendInput(instance, "\r");
+
+      const frame = instance.lastFrame() ?? "";
+      assert.ok(frame.split("\n").length <= 12);
+      const lines = frame.split("\n");
+      assert.equal(lines.filter((line) => line.includes("Harvest Result Search")).length, 1);
+      assert.equal(lines.filter((line) => line.includes("Search: search")).length, 1);
+      assert.equal(lines.filter((line) => line.includes("/ edit · Tab scope")).length, 1);
+      // 12 terminal rows minus 3 chrome rows and 2 metadata rows leave 7 rows.
+      assert.equal(agentRows(frame).length, 7);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("archives the opened match out of an active search", async () => {
+    const fixture = makeFixture([
+      makeItem("needle-01"),
+      makeItem("needle-02"),
+      makeItem("needle-03"),
+      makeItem("other"),
+    ]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      await sendInput(instance, "/");
+      await sendInput(instance, "needle");
+      await sendInput(instance, "\r");
+      await sendInput(instance, "j");
+      await sendInput(instance, "\r");
+      assert.deepEqual(fixture.calls.opened, ["needle-02"]);
+      assert.match(instance.lastFrame() ?? "", /Harvest Result · agent-needle-02/);
+
+      // Archiving from the detail returns to the same search, refreshed.
+      await sendInput(instance, "a");
+      assert.deepEqual(fixture.calls.archived, ["needle-02"]);
+      const frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Result Search · Active · 2 matches/);
+      assert.match(frame, /Search: needle/);
+      assert.match(frame, /Archived result needle-02/);
+      assert.equal(hasAgent(frame, "needle-01"), true);
+      assert.equal(hasAgent(frame, "needle-02"), false);
+      assert.equal(hasAgent(frame, "needle-03"), true);
+      assert.equal(hasAgent(frame, "other"), false);
+
+      // The cursor clamped onto the row that followed the archived one.
+      await sendInput(instance, "a");
+      assert.deepEqual(fixture.calls.archived, ["needle-02", "needle-03"]);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("archives the opened active match under the all scope and keeps the row", async () => {
+    const fixture = makeFixture([makeItem("needle-active"), makeArchivedItem("needle-arch")]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      await sendInput(instance, "/");
+      await sendInput(instance, "needle");
+      await sendInput(instance, "\r");
+      await sendInput(instance, "\t");
+      await sendInput(instance, "\t");
+      // The archived row sorts first, so row two is the active match.
+      await sendInput(instance, "j");
+      await sendInput(instance, "\r");
+      assert.deepEqual(fixture.calls.opened, ["needle-active"]);
+
+      await sendInput(instance, "a");
+      assert.deepEqual(fixture.calls.archived, ["needle-active"]);
+      const frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Result Search · All · 2 matches/);
+      assert.match(frame, /Search: needle/);
+      assert.equal(hasAgent(frame, "needle-active"), true);
+      assert.equal(hasAgent(frame, "needle-arch"), true);
+
+      // The row stayed visible with its state flipped, so r restores it now.
+      await sendInput(instance, "r");
+      assert.deepEqual(fixture.calls.restored, ["needle-active"]);
+      assert.deepEqual(fixture.calls.archived, ["needle-active"]);
+      assert.match(instance.lastFrame() ?? "", /Harvest Result Search · All · 2 matches/);
+    } finally {
+      instance.unmount();
+    }
+  });
+});
+
+describe("inbox search with a real store", () => {
+  test("searches and cycles scope through the real service", async () => {
+    const store = new SqliteResultStore(openDatabase(":memory:"));
+    try {
+      const service = createInboxService({
+        store,
+        clipboard: { name: "fake", copy: async () => ({ provider: "fake", confirmed: true }) },
+        now: () => 9_000,
+      });
+
+      insertResult(
+        store,
+        makeCaptureInput({
+          capturedAtMs: 400,
+          agentName: "agent-build-jp",
+          workspaceName: "api",
+          paneId: "pane-jp",
+          rawText: "ビルド完了 世界 🚀",
+        }),
+      );
+      insertResult(
+        store,
+        makeCaptureInput({
+          capturedAtMs: 300,
+          agentName: "agent-coverage-pct",
+          workspaceName: "web",
+          paneId: "pane-pct",
+          rawText: "coverage 100% done_with_underscores",
+        }),
+      );
+      insertResult(
+        store,
+        makeCaptureInput({
+          capturedAtMs: 200,
+          agentName: "agent-release-active",
+          workspaceName: "web",
+          paneId: "pane-rel-active",
+          rawText: "RELEASE notes",
+        }),
+      );
+      const archived = insertResult(
+        store,
+        makeCaptureInput({
+          capturedAtMs: 100,
+          agentName: "agent-release-archived",
+          workspaceName: "api",
+          paneId: "pane-rel-archived",
+          rawText: "release archive",
+        }),
+      );
+      assert.notEqual(store.archive(archived.id, 5_000), null);
+
+      const instance = render(h(createApp(service)));
+      try {
+        // Active search matches the mixed-case row and excludes the archived one.
+        await sendInput(instance, "/");
+        await sendInput(instance, "release");
+        await sendInput(instance, "\r");
+        let frame = instance.lastFrame() ?? "";
+        assert.match(frame, /Harvest Result Search · Active · 1 match/);
+        assert.match(frame, /Search: release/);
+        assert.equal(hasAgent(frame, "release-active"), true);
+        assert.equal(hasAgent(frame, "release-archived"), false);
+        assert.equal(hasAgent(frame, "build-jp"), false);
+
+        // Archived scope keeps the query and finds the archived row only.
+        await sendInput(instance, "\t");
+        frame = instance.lastFrame() ?? "";
+        assert.match(frame, /Harvest Result Search · Archived · 1 match/);
+        assert.match(frame, /Search: release/);
+        assert.equal(hasAgent(frame, "release-archived"), true);
+        assert.equal(hasAgent(frame, "release-active"), false);
+
+        // All scope shows both, newest capture first.
+        await sendInput(instance, "\t");
+        frame = instance.lastFrame() ?? "";
+        assert.match(frame, /Harvest Result Search · All · 2 matches/);
+        const rows = agentRows(frame);
+        assert.equal(rows[0]?.includes("release-active"), true);
+        assert.equal(rows[1]?.includes("release-archived"), true);
+
+        // Esc clears back to the collection the search started from.
+        await sendInput(instance, "\u001b");
+        frame = instance.lastFrame() ?? "";
+        assert.match(frame, /Harvest Result Inbox · 3 results/);
+        assert.doesNotMatch(frame, /Search:/);
+
+        // A literal % and a Japanese query both match the real stored text.
+        await sendInput(instance, "/");
+        await sendInput(instance, "100%");
+        await sendInput(instance, "\r");
+        frame = instance.lastFrame() ?? "";
+        assert.match(frame, /Harvest Result Search · Active · 1 match/);
+        assert.equal(hasAgent(frame, "coverage-pct"), true);
+        assert.equal(hasAgent(frame, "release-active"), false);
+
+        await sendInput(instance, "\u001b");
+        await sendInput(instance, "/");
+        await sendInput(instance, "完了");
+        await sendInput(instance, "\r");
+        frame = instance.lastFrame() ?? "";
+        assert.match(frame, /Harvest Result Search · Active · 1 match/);
+        assert.match(frame, /Search: 完了/);
+        assert.equal(hasAgent(frame, "build-jp"), true);
+        assert.equal(hasAgent(frame, "coverage-pct"), false);
+
+        // Archiving through the list refreshes through the real service, so the
+        // applied query (not the plain collection) drives the re-list.
+        await sendInput(instance, "a");
+        frame = instance.lastFrame() ?? "";
+        assert.match(frame, /Harvest Result Search · Active · 0 matches/);
+        assert.match(frame, /No results match "完了"/);
+        assert.equal(hasAgent(frame, "build-jp"), false);
+      } finally {
+        instance.unmount();
+      }
+    } finally {
+      store.close();
     }
   });
 });
