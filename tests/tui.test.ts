@@ -19,7 +19,6 @@ import { SqliteResultStore } from "../src/persistence/result-store.ts";
 import { createApp, formatBytes } from "../src/tui/app.ts";
 import {
   clampListOffset,
-  displayRowIndexForCursor,
   displayWidth,
   formatAgentSessionHeader,
   formatGroupedInboxRow,
@@ -492,76 +491,182 @@ describe("inbox TUI", () => {
     }
   });
 
-  test("keeps the flat cursor aligned with grouped rows after interleaving", async () => {
+  test("moves through interleaved grouped and standalone results in visual order", async () => {
     const items = [
       makeItem("a-one", true, {
-        agentSessionKind: "id",
-        agentSessionValue: "session-a",
         orchestrationId: ORCHESTRATION_A,
         orchestrationLabel: "Task A",
         orchestrationRole: "explorer",
       }),
-      makeItem("b-one", true, {
-        agentSessionKind: "id",
-        agentSessionValue: "session-b",
-        orchestrationId: ORCHESTRATION_B,
-        orchestrationLabel: "Task B",
-        orchestrationRole: "fixer",
-      }),
+      makeItem("u-one", true),
       makeItem("a-two", false, {
-        agentSessionKind: "id",
-        agentSessionValue: "session-a",
         orchestrationId: ORCHESTRATION_A,
         orchestrationLabel: "Task A",
         orchestrationRole: "explorer",
       }),
+      makeItem("u-two", false),
     ];
     const rows = buildInboxGrouping(items);
-    const bOneRow = rows.findIndex((row) => row.kind === "result" && row.item.id === "b-one");
-    assert.equal(displayRowIndexForCursor(rows, 1, items), bOneRow);
+    assert.deepEqual(
+      rows.filter((row) => row.kind === "result").map((row) => row.item.id),
+      ["a-one", "a-two", "u-one", "u-two"],
+    );
 
     const fixture = makeFixture(items);
     const instance = render(h(createApp(fixture.port)));
     try {
-      setTerminalSize(instance, 80, 8);
+      const openSelected = async (id: string): Promise<void> => {
+        await sendInput(instance, "\r");
+        assert.equal(fixture.calls.opened.at(-1), id);
+        await sendInput(instance, "\u001b");
+      };
+
+      await openSelected("a-one");
       await sendInput(instance, "j");
-      const frame = instance.lastFrame() ?? "";
-      assert.match(frame, /preview-b-one/);
-      await sendInput(instance, "\r");
-      assert.deepEqual(fixture.calls.opened, ["b-one"]);
+      await openSelected("a-two");
+      await sendInput(instance, "j");
+      await openSelected("u-one");
+      await sendInput(instance, "j");
+      await openSelected("u-two");
+      await sendInput(instance, "k");
+      await openSelected("u-one");
+      await sendInput(instance, "k");
+      await openSelected("a-two");
+      await sendInput(instance, "k");
+      await openSelected("a-one");
     } finally {
       instance.unmount();
     }
   });
 
-  test("pages and wheels by Result indices while keeping grouped selection visible", async () => {
+  test("skips orchestration session headers while moving between sessions", async () => {
     const items = [
-      makeItem("page-a-one", true, {
+      makeItem("session-a-one", true, {
         agentSessionKind: "id",
-        agentSessionValue: "page-session-a",
+        agentSessionValue: "explorer-session",
         orchestrationId: ORCHESTRATION_A,
-        orchestrationLabel: "Page A",
+        orchestrationLabel: "Task A",
         orchestrationRole: "explorer",
       }),
-      makeItem("page-b-one", true, {
-        agentSessionKind: "id",
-        agentSessionValue: "page-session-b",
-        orchestrationId: ORCHESTRATION_B,
-        orchestrationLabel: "Page B",
+      makeItem("session-standalone", true),
+      makeItem("session-a-two", false, {
+        agentSessionKind: "path",
+        agentSessionValue: "/tmp/fixer-session.jsonl",
+        orchestrationId: ORCHESTRATION_A,
+        orchestrationLabel: "Task A",
         orchestrationRole: "fixer",
       }),
-      makeItem("page-a-two", false, {
-        agentSessionKind: "id",
-        agentSessionValue: "page-session-a",
+    ];
+    const fixture = makeFixture(items);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      await sendInput(instance, "j");
+      await sendInput(instance, "\r");
+      assert.deepEqual(fixture.calls.opened, ["session-a-two"]);
+      await sendInput(instance, "\u001b");
+
+      await sendInput(instance, "j");
+      await sendInput(instance, "\r");
+      assert.deepEqual(fixture.calls.opened, ["session-a-two", "session-standalone"]);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("keeps actions on the visually selected grouped result", async () => {
+    const activeItems = [
+      makeItem("action-a-one", true, {
+        orchestrationId: ORCHESTRATION_A,
+        orchestrationLabel: "Task A",
+        orchestrationRole: "explorer",
+      }),
+      makeItem("action-standalone", true),
+      makeItem("action-a-two", false, {
+        orchestrationId: ORCHESTRATION_A,
+        orchestrationLabel: "Task A",
+        orchestrationRole: "fixer",
+      }),
+    ];
+    const fixture = makeFixture(activeItems);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      await sendInput(instance, "j");
+      await sendInput(instance, "y");
+      assert.deepEqual(fixture.calls.copied, ["action-a-two"]);
+
+      await sendInput(instance, "a");
+      assert.deepEqual(fixture.calls.archived, ["action-a-two"]);
+    } finally {
+      instance.unmount();
+    }
+
+    const restoreFixture = makeFixture([
+      makeItem("action-archived-a-one", true, {
+        archived: true,
+        orchestrationId: ORCHESTRATION_A,
+        orchestrationLabel: "Task A",
+        orchestrationRole: "explorer",
+      }),
+      makeItem("action-archived-standalone", true, { archived: true }),
+      makeItem("action-archived-a-two", false, {
+        archived: true,
+        orchestrationId: ORCHESTRATION_A,
+        orchestrationLabel: "Task A",
+        orchestrationRole: "fixer",
+      }),
+    ]);
+    const restoreInstance = render(h(createApp(restoreFixture.port)));
+    try {
+      await sendInput(restoreInstance, "\t");
+      await sendInput(restoreInstance, "j");
+      await sendInput(restoreInstance, "r");
+      assert.deepEqual(restoreFixture.calls.restored, ["action-archived-a-two"]);
+    } finally {
+      restoreInstance.unmount();
+    }
+  });
+
+  test("keeps visual navigation aligned after applying an interleaved search", async () => {
+    const fixture = makeFixture([
+      makeItem("needle-a-one", true, {
+        orchestrationId: ORCHESTRATION_A,
+        orchestrationLabel: "Needle task",
+        orchestrationRole: "explorer",
+      }),
+      makeItem("needle-standalone-one", true),
+      makeItem("needle-standalone-two", false),
+      makeItem("needle-a-two", false, {
+        orchestrationId: ORCHESTRATION_A,
+        orchestrationLabel: "Needle task",
+        orchestrationRole: "fixer",
+      }),
+    ]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      await sendInput(instance, "/");
+      await sendInput(instance, "needle");
+      await sendInput(instance, "\r");
+      await sendInput(instance, "j");
+      await sendInput(instance, "\r");
+      assert.deepEqual(fixture.calls.opened, ["needle-a-two"]);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("pages and wheels by visual Result order while keeping grouped selection visible", async () => {
+    const items = [
+      makeItem("page-a-one", true, {
         orchestrationId: ORCHESTRATION_A,
         orchestrationLabel: "Page A",
         orchestrationRole: "explorer",
       }),
-      makeItem("page-b-two", false, {
-        agentSessionKind: "id",
-        agentSessionValue: "page-session-b",
-        orchestrationId: ORCHESTRATION_B,
-        orchestrationLabel: "Page B",
+      makeItem("page-standalone-one", true),
+      makeItem("page-standalone-two", true),
+      makeItem("page-standalone-three", false),
+      makeItem("page-a-two", false, {
+        orchestrationId: ORCHESTRATION_A,
+        orchestrationLabel: "Page A",
         orchestrationRole: "fixer",
       }),
     ];
@@ -571,14 +676,12 @@ describe("inbox TUI", () => {
       setTerminalSize(instance, 80, 8);
       await sendInput(instance, "j");
       await sendInput(instance, "\u001b[6~");
-      let frame = instance.lastFrame() ?? "";
-      assert.match(frame, /preview-page-b-two/);
+      const frame = instance.lastFrame() ?? "";
+      assert.equal(hasAgent(frame, "page-standalone-three"), true);
 
       await sendInput(instance, "\u001b[<64;1;1M");
-      frame = instance.lastFrame() ?? "";
-      assert.match(frame, /preview-page-a-one/);
       await sendInput(instance, "\r");
-      assert.deepEqual(fixture.calls.opened, ["page-a-one"]);
+      assert.deepEqual(fixture.calls.opened, ["page-a-two"]);
     } finally {
       instance.unmount();
     }

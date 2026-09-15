@@ -87,6 +87,42 @@ export function buildInboxGrouping(items: readonly InboxItem[]): InboxGrouping {
   });
 }
 
+/**
+ * Moves a selected item by Result positions in visual Inbox order.
+ * Headers are deliberately excluded because they are not selectable.
+ */
+export function cursorAfterVisualMove(
+  items: readonly InboxItem[],
+  rows: readonly InboxDisplayRow[],
+  cursor: number,
+  delta: number,
+): number {
+  if (items.length === 0) {
+    return 0;
+  }
+
+  const resultRows = rows.filter((row): row is ResultRow => row.kind === "result");
+  if (resultRows.length === 0) {
+    return Math.min(Math.max(0, cursor), items.length - 1);
+  }
+
+  const currentItem = items[Math.min(Math.max(0, cursor), items.length - 1)];
+  const currentVisualIndex = resultRows.findIndex((row) => row.item.id === currentItem?.id);
+  if (currentVisualIndex < 0) {
+    return Math.min(Math.max(0, cursor + delta), items.length - 1);
+  }
+
+  const destinationVisualIndex = Math.min(
+    Math.max(0, currentVisualIndex + delta),
+    resultRows.length - 1,
+  );
+  const destinationId = resultRows[destinationVisualIndex]?.item.id;
+  const destinationCursor = items.findIndex((item) => item.id === destinationId);
+  return destinationCursor < 0
+    ? Math.min(Math.max(0, cursor), items.length - 1)
+    : destinationCursor;
+}
+
 function createOrchestrationGroup(item: InboxItem): OrchestrationGroup {
   return {
     orchestrationId: item.orchestrationId as string,

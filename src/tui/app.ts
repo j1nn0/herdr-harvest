@@ -1,6 +1,10 @@
 import { type Key, useApp, useInput, useStdout } from "ink";
 import React, { type FC, useEffect, useRef, useState } from "react";
-import { buildInboxGrouping, type InboxDisplayRow } from "../app/inbox-groups.ts";
+import {
+  buildInboxGrouping,
+  cursorAfterVisualMove,
+  type InboxDisplayRow,
+} from "../app/inbox-groups.ts";
 import type {
   InboxDetail,
   InboxItem,
@@ -106,7 +110,7 @@ export function createApp(port: InboxPort): FC {
       setPosition((current) =>
         nextInboxPosition(
           current,
-          current.cursor + delta,
+          cursorAfterVisualMove(items, inboxRows, current.cursor, delta),
           items.length,
           items,
           inboxRows,
