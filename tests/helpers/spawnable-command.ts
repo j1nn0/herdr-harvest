@@ -31,12 +31,7 @@ export function spawnableCommand(
     fs.writeFileSync(env.ARGS_FILE, JSON.stringify(argv));
   }
   if (env.REPORT_ERROR === "1") {
-    fs.writeSync(
-      2,
-      JSON.stringify({
-        error: { code: "pane_open_failed", message: "Pane open failed." },
-      }),
-    );
+    fs.writeSync(2, env.HERDR_STUB_ERROR_OUTPUT ?? "");
     process.exit(7);
   }
   if (env.REPORT_FAILURE === "1") {

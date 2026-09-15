@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- Harvest now uses SDK v0.2 runtime validation for native agent-session payloads, and SDK-provided protocol fixtures keep process-level tests aligned with the SDK wire contract.
+
 - `HARVEST_CAPTURE_LINES` is now documented as the row count requested from Herdr rather than a guaranteed returned-row count; internal metadata naming reflects that requested-count meaning.
 
 ## [0.4.0] - 2026-09-15

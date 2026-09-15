@@ -6,16 +6,20 @@ import { join } from "node:path";
 import { describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { createCliErrorOutputFixture, serializeCliOutput } from "@j1nn0/herdr-plugin-sdk/testing";
 import { spawnableCommand } from "./helpers/spawnable-command.ts";
 
 const execFileAsync = promisify(execFile);
 const REPOSITORY_ROOT = fileURLToPath(new URL("..", import.meta.url));
+const PANE_OPEN_ERROR_OUTPUT = serializeCliOutput(
+  createCliErrorOutputFixture({ code: "pane_open_failed", message: "Pane open failed." }),
+);
 
 const HERDR_STUB_BODY = [
   'const fs = require("node:fs");',
   "fs.writeFileSync(process.env.ARGS_FILE, JSON.stringify(process.argv.slice(2)));",
   'if (process.env.REPORT_ERROR === "1") {',
-  '  process.stderr.write(JSON.stringify({ error: { code: "pane_open_failed", message: "Pane open failed." } }));',
+  '  process.stderr.write(process.env.HERDR_STUB_ERROR_OUTPUT ?? "");',
   "  process.exitCode = 7;",
   '} else if (process.env.REPORT_FAILURE === "1") {',
   '  process.stderr.write("stub command failed");',
@@ -90,6 +94,7 @@ describe("open entrypoint", () => {
         HERDR_BIN_PATH: command.path,
         ARGS_FILE: join(directory, "args.json"),
         REPORT_ERROR: "1",
+        HERDR_STUB_ERROR_OUTPUT: PANE_OPEN_ERROR_OUTPUT,
       });
 
       assert.equal(result.exitCode, 1);

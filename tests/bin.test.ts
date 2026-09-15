@@ -7,6 +7,13 @@ import { describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
+import {
+  createAgentGetOutputFixture,
+  createCliErrorOutputFixture,
+  createPaneGetOutputFixture,
+  createWorkspaceListOutputFixture,
+  serializeCliOutput,
+} from "@j1nn0/herdr-plugin-sdk/testing";
 import { openDatabase } from "../src/persistence/database.ts";
 import { SqliteResultStore } from "../src/persistence/result-store.ts";
 import { RUNTIME_LOCATOR_FILE_NAME } from "../src/runtime/locator.ts";
@@ -15,6 +22,95 @@ import { spawnableCommand } from "./helpers/spawnable-command.ts";
 
 const execFileAsync = promisify(execFile);
 const REPOSITORY_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
+
+const AGENT_GET_OUTPUT = serializeCliOutput(
+  createAgentGetOutputFixture({
+    id: "cli:agent:get",
+    payload: {
+      agent: "claude",
+      terminal_id: "term-1",
+      focused: false,
+      agent_session: {
+        source: "stub",
+        agent: "claude",
+        kind: "id",
+        value: "stub-session",
+      },
+      agent_status: "done",
+      revision: 1,
+      name: "worker",
+      pane_id: "w1G:p1",
+      tab_id: "w1G:t1",
+      terminal_title_stripped: "stub pane",
+      workspace_id: "w1G",
+    },
+  }),
+);
+
+const MALFORMED_AGENT_GET_OUTPUT = serializeCliOutput({
+  ...createAgentGetOutputFixture({
+    id: "cli:agent:get",
+    payload: {
+      agent: "claude",
+      terminal_id: "term-1",
+      focused: false,
+      agent_status: "done",
+      revision: 1,
+      name: "worker",
+      pane_id: "w1G:p1",
+      tab_id: "w1G:t1",
+      terminal_title_stripped: "stub pane",
+      workspace_id: "w1G",
+    },
+  }),
+  result: {
+    ...createAgentGetOutputFixture().result,
+    agent: {
+      ...createAgentGetOutputFixture().result.agent,
+      agent_session: { kind: "id", value: "session" },
+    },
+  },
+});
+
+const PANE_GET_OUTPUT = serializeCliOutput(
+  createPaneGetOutputFixture({
+    id: "cli:pane:get",
+    payload: {
+      agent: "claude",
+      terminal_id: "term-1",
+      focused: false,
+      agent_status: "done",
+      revision: 1,
+      pane_id: "w1G:p1",
+      tab_id: "w1G:t1",
+      terminal_title_stripped: "stub pane",
+      workspace_id: "w1G",
+    },
+  }),
+);
+
+const WORKSPACE_LIST_OUTPUT = serializeCliOutput(
+  createWorkspaceListOutputFixture({
+    id: "cli:workspace:list",
+    payload: { workspace_id: "w1G", label: "Stub Workspace" },
+  }),
+);
+
+const AGENT_READ_ERROR_OUTPUT = serializeCliOutput(
+  createCliErrorOutputFixture({
+    id: "cli:agent:read",
+    code: "agent_read_failed",
+    message: "stub read failed",
+  }),
+);
+
+const PANE_READ_ERROR_OUTPUT = serializeCliOutput(
+  createCliErrorOutputFixture({
+    id: "cli:pane:read",
+    code: "pane_read_failed",
+    message: "stub read failed",
+  }),
+);
 
 describe("hook entrypoint", () => {
   test("captures one done event and skips an identical rerun", async () => {
@@ -35,10 +131,30 @@ describe("hook entrypoint", () => {
       assert.equal(summary(second.stdout).reason, "ignored duplicate done after done");
       assert.equal(readRows(fixture.stateDirectory).length, 1);
       assert.equal(readRows(fixture.stateDirectory)[0]?.rawText, "stub output\n\n世界 🚀  \n");
+      assert.equal(readRows(fixture.stateDirectory)[0]?.agentSessionKind, "id");
+      assert.equal(readRows(fixture.stateDirectory)[0]?.agentSessionValue, "stub-session");
       // The automatic hook never infers an orchestration claim.
       assert.equal(readRows(fixture.stateDirectory)[0]?.orchestrationId, null);
       assert.equal(readRows(fixture.stateDirectory)[0]?.orchestrationLabel, null);
       assert.equal(readRows(fixture.stateDirectory)[0]?.orchestrationRole, null);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test("rejects a malformed native agent session without writing a result", async () => {
+    const fixture = makeFixture();
+
+    try {
+      const result = await runHook({
+        ...fixture.env,
+        HERDR_PLUGIN_EVENT_JSON: doneEvent(),
+        HERDR_STUB_AGENT_GET_OUTPUT: MALFORMED_AGENT_GET_OUTPUT,
+      });
+
+      assert.equal(result.exitCode, 1);
+      assert.equal(summary(result.stdout).status, "failed");
+      assert.equal(readRows(fixture.stateDirectory).length, 0);
     } finally {
       fixture.cleanup();
     }
@@ -702,6 +818,11 @@ function makeFixture(): Fixture {
       HARVEST_CAPTURE_SOURCE: "detection",
       HERDR_BIN_PATH: stubPath,
       HERDR_PLUGIN_EVENT: "pane.agent_status_changed",
+      HERDR_STUB_AGENT_GET_OUTPUT: AGENT_GET_OUTPUT,
+      HERDR_STUB_AGENT_READ_ERROR_OUTPUT: AGENT_READ_ERROR_OUTPUT,
+      HERDR_STUB_PANE_GET_OUTPUT: PANE_GET_OUTPUT,
+      HERDR_STUB_PANE_READ_ERROR_OUTPUT: PANE_READ_ERROR_OUTPUT,
+      HERDR_STUB_WORKSPACE_LIST_OUTPUT: WORKSPACE_LIST_OUTPUT,
     },
     cleanup: () => removeDirectory(stateDirectory),
   };
@@ -762,70 +883,35 @@ function eventWithStatus(status: string): string {
 const HERDR_STUB = `const args = process.argv.slice(2);
 const [scope, command] = args;
 
-function output(value) {
-  process.stdout.write(typeof value === "string" ? value : JSON.stringify(value));
+function outputFixture(name) {
+  const value = process.env[name];
+  if (value === undefined) {
+    throw new Error("missing stub output: " + name);
+  }
+  process.stdout.write(value);
 }
 
 if (scope === "agent" && command === "get") {
-  output({
-    id: "cli:agent:get",
-    result: {
-      agent: {
-        agent: "claude",
-        terminal_id: "term-1",
-        focused: false,
-        agent_session: { kind: "id", value: "stub-session" },
-        agent_status: "done",
-        revision: 1,
-        name: "worker",
-        pane_id: "w1G:p1",
-        tab_id: "w1G:t1",
-        terminal_title_stripped: "stub pane",
-        workspace_id: "w1G"
-      },
-      type: "agent_info"
-    }
-  });
+  outputFixture("HERDR_STUB_AGENT_GET_OUTPUT");
 } else if (scope === "pane" && command === "get") {
-  output({
-    id: "cli:pane:get",
-    result: {
-      pane: {
-        agent: "claude",
-        terminal_id: "term-1",
-        focused: false,
-        agent_status: "done",
-        revision: 1,
-        pane_id: "w1G:p1",
-        tab_id: "w1G:t1",
-        terminal_title_stripped: "stub pane",
-        workspace_id: "w1G"
-      },
-      type: "pane_info"
-    }
-  });
+  outputFixture("HERDR_STUB_PANE_GET_OUTPUT");
 } else if ((scope === "agent" || scope === "pane") && command === "read") {
   if (process.env.STUB_FAIL_READ === "1") {
     process.stderr.write(
-      JSON.stringify({
-        error: {
-          code: scope === "agent" ? "agent_read_failed" : "pane_read_failed",
-          message: "stub read failed"
-        },
-        id: scope === "agent" ? "cli:agent:read" : "cli:pane:read"
-      }),
+      process.env[
+        scope === "agent"
+          ? "HERDR_STUB_AGENT_READ_ERROR_OUTPUT"
+          : "HERDR_STUB_PANE_READ_ERROR_OUTPUT"
+      ] ?? "",
     );
     process.exitCode = 1;
   } else if (scope === "agent") {
-    output("stub output\\n\\n世界 🚀  \\n");
+    process.stdout.write("stub output\\n\\n世界 🚀  \\n");
   } else {
-    output("pane fallback output\\n");
+    process.stdout.write("pane fallback output\\n");
   }
 } else if (scope === "workspace" && command === "list") {
-  output({
-    id: "cli:workspace:list",
-    result: { workspaces: [{ workspace_id: "w1G", label: "Stub Workspace" }] }
-  });
+  outputFixture("HERDR_STUB_WORKSPACE_LIST_OUTPUT");
 } else {
   process.stderr.write("unsupported stub command\\n");
   process.exitCode = 1;
