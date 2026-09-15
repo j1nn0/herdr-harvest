@@ -5,7 +5,8 @@ is a **claim**: an explicit, synchronous statement an orchestrator makes in the
 same call that captures the result. Nothing about the claim is inferred.
 
 This document is the integration surface for orchestrators that start explorer or
-fixer agents. The rest of Harvest, including the Result Inbox, is unaffected.
+fixer agents. Claimed Results appear in the Result Inbox grouped by orchestration
+and native agent session, and orchestration id, label, and role are searchable.
 
 ## Discovery
 

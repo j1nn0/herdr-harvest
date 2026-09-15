@@ -6,11 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-15
+
 ### Added
 
-- Added orchestration grouping in the Result Inbox by task and native agent session, with orchestration id, label, and role available to search.
-- Added explicit orchestration claims to the manual capture entrypoint: `--orchestration-id`, `--orchestration-label`, and `--orchestration-role` attach an explorer or fixer task to a captured result with first-writer-wins semantics, alongside a `--capabilities` probe for integration discovery.
+- Added explicit orchestration claims to the manual capture entrypoint: `--orchestration-id`, `--orchestration-label`, and `--orchestration-role` attach an explorer or fixer task to a captured result with first-writer-wins semantics.
+- Added capture capability negotiation through `--capabilities`, advertising the capture protocol, orchestration claims, runtime locator, and accepted explorer/fixer roles.
 - Added a runtime locator (`orchestration-capture-runtime.json`, published in the plugin config directory at server startup and refreshed on every hook run) so an external orchestrator can discover the plugin's state directory and live Herdr socket instead of guessing Herdr's internal layout, advertised as the `runtime-locator` capture capability.
+- Added Result Inbox grouping by orchestration and native agent session.
+- Added Result search by orchestration id, label, and role.
 
 ## [0.3.0] - 2026-09-14
 
@@ -61,7 +65,8 @@ First public release.
 - A completion inferred only from `blocked → idle` is not captured, because that transition can equally mean an approval prompt was cancelled.
 - Archived results stay in the database but cannot yet be browsed or restored from the inbox.
 
-[Unreleased]: https://github.com/j1nn0/herdr-harvest/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/j1nn0/herdr-harvest/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/j1nn0/herdr-harvest/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/j1nn0/herdr-harvest/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/j1nn0/herdr-harvest/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/j1nn0/herdr-harvest/compare/v0.1.0...v0.1.1
