@@ -1,6 +1,12 @@
 import { Box, Text } from "ink";
 import React, { type FC } from "react";
 
+import {
+  type AgentSessionHeader,
+  buildInboxGrouping,
+  type InboxDisplayRow,
+  type OrchestrationHeader,
+} from "../app/inbox-groups.ts";
 import type { InboxItem, InboxMode, InboxScope } from "../app/inbox-service.ts";
 
 const h = React.createElement;
@@ -30,6 +36,8 @@ export interface InboxSearchView {
 
 export interface InboxViewProps {
   items: readonly InboxItem[];
+  /** Display rows derived from the same visible item subset. */
+  rows?: readonly InboxDisplayRow[];
   cursor: number;
   width: number;
   mode?: InboxMode;
@@ -99,8 +107,36 @@ export function listOffsetForCursor(
   return normalizedOffset;
 }
 
+/** Map the result cursor onto the physical display row that represents it. */
+export function displayRowIndexForCursor(
+  rows: readonly InboxDisplayRow[],
+  cursor: number,
+  items?: readonly InboxItem[],
+): number {
+  const normalizedCursor = Number.isFinite(cursor) ? Math.max(0, Math.floor(cursor)) : 0;
+  const selectedId = items?.[normalizedCursor]?.id;
+  let resultIndex = 0;
+  let lastResultRow = 0;
+  for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
+    const row = rows[rowIndex];
+    if (row?.kind !== "result") {
+      continue;
+    }
+    lastResultRow = rowIndex;
+    if (
+      (selectedId !== undefined && row.item.id === selectedId) ||
+      (selectedId === undefined && resultIndex === normalizedCursor)
+    ) {
+      return rowIndex;
+    }
+    resultIndex += 1;
+  }
+  return lastResultRow;
+}
+
 export const InboxView: FC<InboxViewProps> = ({
   items,
+  rows: groupingRows,
   cursor,
   width,
   mode = "active",
@@ -110,16 +146,59 @@ export const InboxView: FC<InboxViewProps> = ({
   search,
 }) => {
   const contentWidth = contentWidthFor(width);
+  const displayRows = groupingRows ?? buildInboxGrouping(items);
   const rowOffset = Number.isFinite(offset) ? Math.max(0, Math.floor(offset)) : 0;
   const rowLimit =
     limit === undefined ? undefined : Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : 0;
-  const visibleItems =
-    rowLimit === undefined ? items.slice(rowOffset) : items.slice(rowOffset, rowOffset + rowLimit);
-  const rows = visibleItems.map((item, index) => {
-    const itemIndex = rowOffset + index;
-    const row = formatInboxRow(item, contentWidth);
-    return h(Text, { key: item.id, inverse: itemIndex === cursor }, row);
+  const itemIndicesById = new Map(items.map((item, index) => [item.id, index]));
+  let currentOrchestrationRole: OrchestrationHeader["orchestrationRole"] = null;
+  const annotatedRows = displayRows.map((row, displayIndex) => {
+    if (row.kind === "orchestration") {
+      currentOrchestrationRole = row.orchestrationRole;
+    }
+    const resultIndex = row.kind === "result" ? (itemIndicesById.get(row.item.id) ?? null) : null;
+    return { row, displayIndex, resultIndex, currentOrchestrationRole };
   });
+  const visibleRows =
+    rowLimit === undefined
+      ? annotatedRows.slice(rowOffset)
+      : annotatedRows.slice(rowOffset, rowOffset + rowLimit);
+  const renderedRows = visibleRows.map(
+    ({ row, displayIndex, resultIndex, currentOrchestrationRole }) => {
+      if (row.kind === "orchestration") {
+        return h(
+          Text,
+          {
+            key: `orchestration-${row.orchestrationId}-${displayIndex}`,
+            dimColor: true,
+            wrap: "truncate",
+          },
+          formatOrchestrationHeader(row, contentWidth),
+        );
+      }
+      if (row.kind === "agent-session") {
+        const firstChild = displayRows[displayIndex + 1];
+        const agentLabel =
+          firstChild?.kind === "result" ? firstChild.item.agentLabel : "unknown agent";
+        const role = sessionRole(displayRows, displayIndex, currentOrchestrationRole);
+        return h(
+          Text,
+          { key: `agent-session-${displayIndex}`, dimColor: true, wrap: "truncate" },
+          formatAgentSessionHeader(row, agentLabel, role, contentWidth),
+        );
+      }
+
+      const rowText =
+        row.item.orchestrationId === null
+          ? formatInboxRow(row.item, contentWidth)
+          : formatGroupedInboxRow(row.item, contentWidth);
+      return h(
+        Text,
+        { key: `result-${row.item.id}`, inverse: resultIndex === cursor, wrap: "truncate" },
+        rowText,
+      );
+    },
+  );
   const metadataLines = selectedMetadataLines(items[cursor], contentWidth);
   const metadata =
     metadataLines.length === 0
@@ -142,7 +221,7 @@ export const InboxView: FC<InboxViewProps> = ({
     { flexDirection: "column", paddingX: 1 },
     h(Text, { bold: true, wrap: "truncate" }, title),
     h(Text, { dimColor: true, wrap: "truncate" }, subtitle),
-    items.length > 0 ? rows : h(Text, { dimColor: true, wrap: "truncate" }, emptyState),
+    items.length > 0 ? renderedRows : h(Text, { dimColor: true, wrap: "truncate" }, emptyState),
     metadata,
     statusElement(status),
     h(Text, { dimColor: true, wrap: "truncate" }, footer),
@@ -233,6 +312,70 @@ export function formatInboxRow(item: InboxItem, width: number, nowMs = Date.now(
 
   const { visibleFields, separator } = chooseVisibleFields(fields, limit);
   return fitFields(visibleFields, limit, separator);
+}
+
+export function formatOrchestrationHeader(header: OrchestrationHeader, width: number): string {
+  return truncateDisplay(
+    `◆ ${header.orchestrationLabel ?? "unknown orchestration"} · ${header.orchestrationId.slice(0, 8)} · ${resultCountLabel(header.count)}`,
+    normalizedWidth(width),
+  );
+}
+
+export function formatAgentSessionHeader(
+  header: AgentSessionHeader,
+  agentLabel: string,
+  role: string | null,
+  width: number,
+): string {
+  return truncateDisplay(
+    `  ${role ?? "unknown role"} · ${agentLabel || "unknown agent"} · ${header.sessionShortId} · ${resultCountLabel(header.count)}`,
+    normalizedWidth(width),
+  );
+}
+
+export function formatGroupedInboxRow(item: InboxItem, width: number, nowMs = Date.now()): string {
+  const limit = normalizedWidth(width);
+  if (limit === 0) {
+    return "";
+  }
+
+  const indent = "    ";
+  const availableWidth = Math.max(0, limit - displayWidth(indent));
+  const age = formatTimestamp(item.capturedAtMs, nowMs);
+  const preview = item.preview || "(empty)";
+  const fields: RowField[] = [
+    { value: item.unread ? "●" : " ", minimumWidth: 1 },
+    { value: age, minimumWidth: Math.min(5, displayWidth(age)) },
+    { value: item.workspaceLabel, minimumWidth: Math.min(2, displayWidth(item.workspaceLabel)) },
+    { value: preview, minimumWidth: Math.min(4, displayWidth(preview)) },
+  ];
+  const { visibleFields, separator } = chooseVisibleFields(fields, availableWidth);
+  const row = `${indent}${fitFields(visibleFields, availableWidth, separator)}`;
+  return displayWidth(row) <= limit ? row : truncateDisplay(row, limit);
+}
+
+function resultCountLabel(count: number): string {
+  const normalizedCount = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+  return `${normalizedCount} result${normalizedCount === 1 ? "" : "s"}`;
+}
+
+function sessionRole(
+  rows: readonly InboxDisplayRow[],
+  headerIndex: number,
+  fallback: OrchestrationHeader["orchestrationRole"],
+): string | null {
+  const roles: string[] = [];
+  for (let rowIndex = headerIndex + 1; rowIndex < rows.length; rowIndex += 1) {
+    const row = rows[rowIndex];
+    if (row?.kind !== "result") {
+      break;
+    }
+    const role = row.item.orchestrationRole;
+    if (role !== null && !roles.includes(role)) {
+      roles.push(role);
+    }
+  }
+  return roles.length > 0 ? roles.join("/") : fallback;
 }
 
 /**
@@ -411,8 +554,9 @@ function truncateDisplay(text: string, width: number): string {
   if (limit === 0) {
     return "";
   }
-  if (displayWidth(text) <= limit) {
-    return text;
+  const singleLine = text.replace(/\r\n?|\n|\u2028|\u2029/g, " ");
+  if (displayWidth(singleLine) <= limit) {
+    return singleLine;
   }
   if (limit <= displayWidth(ELLIPSIS)) {
     return ELLIPSIS;
@@ -421,7 +565,7 @@ function truncateDisplay(text: string, width: number): string {
   const budget = limit - displayWidth(ELLIPSIS);
   let used = 0;
   let result = "";
-  for (const character of text) {
+  for (const character of singleLine) {
     const characterWidth = displayWidth(character);
     if (used + characterWidth > budget) {
       break;

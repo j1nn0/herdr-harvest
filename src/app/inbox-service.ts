@@ -1,6 +1,7 @@
 import type { ClipboardProvider, CopyReport } from "../clipboard/provider.ts";
 import { ClipboardError } from "../clipboard/provider.ts";
-import type { HarvestResult } from "../domain/result.ts";
+import type { OrchestrationRole } from "../domain/orchestration.ts";
+import type { AgentSessionKind, HarvestResult } from "../domain/result.ts";
 import { preview as makePreview } from "../domain/result.ts";
 import type { ResultStore } from "../persistence/result-store.ts";
 import { isSearchQueryActive, matchesResultSearch } from "./result-search.ts";
@@ -10,6 +11,11 @@ export interface InboxItem {
   id: string;
   agentLabel: string;
   sessionShortId: string;
+  agentSessionKind: AgentSessionKind | null;
+  agentSessionValue: string | null;
+  orchestrationId: string | null;
+  orchestrationLabel: string | null;
+  orchestrationRole: OrchestrationRole | null;
   workspaceLabel: string;
   herdrSessionLabel: string | null;
   paneLabel: string;
@@ -161,6 +167,11 @@ function toItem(result: HarvestResult): InboxItem {
     id: result.id,
     agentLabel: result.agentName ?? result.agentKind ?? "unknown agent",
     sessionShortId: sessionShortId(result),
+    agentSessionKind: result.agentSessionKind,
+    agentSessionValue: result.agentSessionValue,
+    orchestrationId: result.orchestrationId,
+    orchestrationLabel: result.orchestrationLabel,
+    orchestrationRole: result.orchestrationRole,
     workspaceLabel: result.workspaceName ?? result.workspaceId ?? "-",
     herdrSessionLabel: result.herdrSessionLabel ?? result.herdrSessionKey ?? null,
     paneLabel: result.paneName ?? result.paneId,

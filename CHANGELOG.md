@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Added orchestration grouping in the Result Inbox by task and native agent session, with orchestration id, label, and role available to search.
 - Added explicit orchestration claims to the manual capture entrypoint: `--orchestration-id`, `--orchestration-label`, and `--orchestration-role` attach an explorer or fixer task to a captured result with first-writer-wins semantics, alongside a `--capabilities` probe for integration discovery.
 - Added a runtime locator (`orchestration-capture-runtime.json`, published in the plugin config directory at server startup and refreshed on every hook run) so an external orchestrator can discover the plugin's state directory and live Herdr socket instead of guessing Herdr's internal layout, advertised as the `runtime-locator` capture capability.
 

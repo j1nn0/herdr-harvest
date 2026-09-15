@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { render } from "ink-testing-library";
 import React from "react";
+import { buildInboxGrouping } from "../src/app/inbox-groups.ts";
 import type {
   InboxDetail,
   InboxItem,
@@ -18,14 +19,21 @@ import { SqliteResultStore } from "../src/persistence/result-store.ts";
 import { createApp, formatBytes } from "../src/tui/app.ts";
 import {
   clampListOffset,
+  displayRowIndexForCursor,
   displayWidth,
+  formatAgentSessionHeader,
+  formatGroupedInboxRow,
   formatInboxRow,
+  formatOrchestrationHeader,
   inboxViewportLines,
   listOffsetForCursor,
   selectedMetadataLines,
 } from "../src/tui/inbox-view.ts";
+import { resultViewportLines } from "../src/tui/result-view.ts";
 
 const h = React.createElement;
+const ORCHESTRATION_A = "2f6a3c1e-8b1d-4a30-9a4f-5b1c2d3e4f50";
+const ORCHESTRATION_B = "8a2c7e10-4d6f-4b91-9c20-1234567890ab";
 
 interface FixtureOptions {
   copy?: (id: string) => Promise<CopyReport>;
@@ -42,11 +50,16 @@ interface Fixture {
   };
 }
 
-function makeItem(id: string, unread = true): InboxItem {
+function makeItem(id: string, unread = true, overrides: Partial<InboxItem> = {}): InboxItem {
   return {
     id,
     agentLabel: `agent-${id}`,
     sessionShortId: `sess-${id}`,
+    agentSessionKind: null,
+    agentSessionValue: null,
+    orchestrationId: null,
+    orchestrationLabel: null,
+    orchestrationRole: null,
     workspaceLabel: "workspace",
     herdrSessionLabel: "default",
     paneLabel: `pane-${id}`,
@@ -54,6 +67,7 @@ function makeItem(id: string, unread = true): InboxItem {
     preview: `preview-${id}`,
     unread,
     archived: false,
+    ...overrides,
   };
 }
 
@@ -108,9 +122,14 @@ function insertResult(store: SqliteResultStore, input: CaptureInput): HarvestRes
  * with the same literal NFC + lowercase semantics as the service matcher.
  */
 function fixtureMatches(item: InboxItem, needle: string): boolean {
-  return [item.agentLabel, item.preview, item.id].some((field) =>
-    field.normalize("NFC").toLowerCase().includes(needle),
-  );
+  return [
+    item.agentLabel,
+    item.preview,
+    item.id,
+    item.orchestrationId,
+    item.orchestrationLabel,
+    item.orchestrationRole,
+  ].some((field) => field?.normalize("NFC").toLowerCase().includes(needle));
 }
 
 function fixtureInScope(item: InboxItem, scope: InboxScope): boolean {
@@ -344,6 +363,75 @@ describe("inbox TUI", () => {
     assert.equal(listOffsetForCursor(22, 3, 19), 4);
     assert.equal(clampListOffset(listOffsetForCursor(99, 10, 19), 30, 19), 11);
     assert.equal(clampListOffset(11, 29, 19), 10);
+    assert.equal(resultViewportLines(20), 15);
+    assert.equal(resultViewportLines(20, true), 14);
+  });
+
+  test("formats orchestration headers and grouped rows within the display width", () => {
+    const item = makeItem("grouped", true, {
+      agentLabel: "探索エージェント🚀",
+      sessionShortId: "short-session",
+      agentSessionKind: "id",
+      agentSessionValue: "native-session",
+      orchestrationId: ORCHESTRATION_A,
+      orchestrationLabel: "日本語の長い orchestration label 🚀",
+      orchestrationRole: "explorer",
+      workspaceLabel: "workspace",
+      preview: "preview text",
+    });
+    const rows = buildInboxGrouping([item]);
+    const orchestration = rows[0];
+    const session = rows[1];
+    assert.equal(orchestration?.kind, "orchestration");
+    assert.equal(session?.kind, "agent-session");
+    if (orchestration?.kind !== "orchestration" || session?.kind !== "agent-session") {
+      throw new Error("Expected orchestration and session headers.");
+    }
+
+    const header = formatOrchestrationHeader(orchestration, 80);
+    const sessionHeader = formatAgentSessionHeader(session, item.agentLabel, "explorer", 80);
+    const resultRow = formatGroupedInboxRow(item, 80, 60_000);
+    assert.match(header, /◆ 日本語の長い orchestration label 🚀 · 2f6a3c1e · 1 result/);
+    assert.match(sessionHeader, / {2}explorer · 探索エージェント🚀 · short-session · 1 result/);
+    assert.match(resultRow, /^ {4}● /);
+    assert.ok(displayWidth(formatOrchestrationHeader(orchestration, 12)) <= 12);
+    assert.ok(
+      displayWidth(formatAgentSessionHeader(session, item.agentLabel, "explorer", 12)) <= 12,
+    );
+    assert.ok(displayWidth(formatGroupedInboxRow(item, 12, 60_000)) <= 12);
+  });
+
+  test("keeps display metadata on one physical line", () => {
+    const item = makeItem("line-break", true, {
+      agentLabel: "agent\nlabel🚀",
+      sessionShortId: "session",
+      agentSessionKind: "id",
+      agentSessionValue: "native-session",
+      orchestrationId: ORCHESTRATION_A,
+      orchestrationLabel: "探索\nタスク🚀",
+      orchestrationRole: "explorer",
+      workspaceLabel: "workspace\nlabel",
+      paneLabel: "pane\nlabel",
+      preview: "preview\nlabel",
+    });
+    const rows = buildInboxGrouping([item]);
+    const orchestration = rows[0];
+    const session = rows[1];
+    if (orchestration?.kind !== "orchestration" || session?.kind !== "agent-session") {
+      throw new Error("Expected orchestration and session headers.");
+    }
+
+    assert.doesNotMatch(formatOrchestrationHeader(orchestration, 80), /[\r\n\u2028\u2029]/);
+    assert.doesNotMatch(
+      formatAgentSessionHeader(session, item.agentLabel, "explorer", 80),
+      /[\r\n\u2028\u2029]/,
+    );
+    assert.doesNotMatch(formatGroupedInboxRow(item, 80, 60_000), /[\r\n\u2028\u2029]/);
+    assert.doesNotMatch(
+      formatInboxRow({ ...item, orchestrationId: null }, 80, 60_000),
+      /[\r\n\u2028\u2029]/,
+    );
+    assert.ok(selectedMetadataLines(item, 80).every((line) => !/[\r\n\u2028\u2029]/.test(line)));
   });
 
   test("renders one row per result with an unread indicator", () => {
@@ -354,6 +442,184 @@ describe("inbox TUI", () => {
       assert.match(frame, /agent-one/);
       assert.match(frame, /agent-two/);
       assert.match(frame, /●\s+agent-one/);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("renders orchestration and session headers without making them selectable", () => {
+    const items = [
+      makeItem("explorer-one", true, {
+        agentLabel: "explorer-agent",
+        sessionShortId: "explorer-short",
+        agentSessionKind: "id",
+        agentSessionValue: "native-explorer",
+        orchestrationId: ORCHESTRATION_A,
+        orchestrationLabel: "Explore parser",
+        orchestrationRole: "explorer",
+      }),
+      makeItem("fixer-one", false, {
+        agentLabel: "fixer-agent",
+        sessionShortId: "fixer-short",
+        agentSessionKind: "path",
+        agentSessionValue: "/tmp/native-fixer.jsonl",
+        orchestrationId: ORCHESTRATION_A,
+        orchestrationLabel: "Explore parser",
+        orchestrationRole: "fixer",
+      }),
+      makeItem("explorer-two", true, {
+        agentLabel: "explorer-agent",
+        sessionShortId: "explorer-short",
+        agentSessionKind: "id",
+        agentSessionValue: "native-explorer",
+        orchestrationId: ORCHESTRATION_A,
+        orchestrationLabel: "Explore parser",
+        orchestrationRole: "fixer",
+      }),
+      makeItem("standalone", true),
+    ];
+    const fixture = makeFixture(items);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      const frame = instance.lastFrame() ?? "";
+      assert.match(frame, /◆ Explore parser · 2f6a3c1e · 3 results/);
+      assert.match(frame, /explorer\/fixer · explorer-agent · explorer-short · 2 results/);
+      assert.match(frame, /fixer · fixer-agent · fixer-short · 1 result/);
+      assert.match(frame, / {4}●/);
+      assert.match(frame, /agent-standalone/);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("keeps the flat cursor aligned with grouped rows after interleaving", async () => {
+    const items = [
+      makeItem("a-one", true, {
+        agentSessionKind: "id",
+        agentSessionValue: "session-a",
+        orchestrationId: ORCHESTRATION_A,
+        orchestrationLabel: "Task A",
+        orchestrationRole: "explorer",
+      }),
+      makeItem("b-one", true, {
+        agentSessionKind: "id",
+        agentSessionValue: "session-b",
+        orchestrationId: ORCHESTRATION_B,
+        orchestrationLabel: "Task B",
+        orchestrationRole: "fixer",
+      }),
+      makeItem("a-two", false, {
+        agentSessionKind: "id",
+        agentSessionValue: "session-a",
+        orchestrationId: ORCHESTRATION_A,
+        orchestrationLabel: "Task A",
+        orchestrationRole: "explorer",
+      }),
+    ];
+    const rows = buildInboxGrouping(items);
+    const bOneRow = rows.findIndex((row) => row.kind === "result" && row.item.id === "b-one");
+    assert.equal(displayRowIndexForCursor(rows, 1, items), bOneRow);
+
+    const fixture = makeFixture(items);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      setTerminalSize(instance, 80, 8);
+      await sendInput(instance, "j");
+      const frame = instance.lastFrame() ?? "";
+      assert.match(frame, /preview-b-one/);
+      await sendInput(instance, "\r");
+      assert.deepEqual(fixture.calls.opened, ["b-one"]);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("pages and wheels by Result indices while keeping grouped selection visible", async () => {
+    const items = [
+      makeItem("page-a-one", true, {
+        agentSessionKind: "id",
+        agentSessionValue: "page-session-a",
+        orchestrationId: ORCHESTRATION_A,
+        orchestrationLabel: "Page A",
+        orchestrationRole: "explorer",
+      }),
+      makeItem("page-b-one", true, {
+        agentSessionKind: "id",
+        agentSessionValue: "page-session-b",
+        orchestrationId: ORCHESTRATION_B,
+        orchestrationLabel: "Page B",
+        orchestrationRole: "fixer",
+      }),
+      makeItem("page-a-two", false, {
+        agentSessionKind: "id",
+        agentSessionValue: "page-session-a",
+        orchestrationId: ORCHESTRATION_A,
+        orchestrationLabel: "Page A",
+        orchestrationRole: "explorer",
+      }),
+      makeItem("page-b-two", false, {
+        agentSessionKind: "id",
+        agentSessionValue: "page-session-b",
+        orchestrationId: ORCHESTRATION_B,
+        orchestrationLabel: "Page B",
+        orchestrationRole: "fixer",
+      }),
+    ];
+    const fixture = makeFixture(items);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      setTerminalSize(instance, 80, 8);
+      await sendInput(instance, "j");
+      await sendInput(instance, "\u001b[6~");
+      let frame = instance.lastFrame() ?? "";
+      assert.match(frame, /preview-page-b-two/);
+
+      await sendInput(instance, "\u001b[<64;1;1M");
+      frame = instance.lastFrame() ?? "";
+      assert.match(frame, /preview-page-a-one/);
+      await sendInput(instance, "\r");
+      assert.deepEqual(fixture.calls.opened, ["page-a-one"]);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("truncates grouped Japanese and emoji rows to a narrow terminal", async () => {
+    const item = makeItem("unicode-group", true, {
+      agentLabel: "探索エージェント🚀の長い名前",
+      sessionShortId: "native-session-short",
+      agentSessionKind: "id",
+      agentSessionValue: "native-session",
+      orchestrationId: ORCHESTRATION_A,
+      orchestrationLabel: "日本語の orchestration label 🚀 とても長い名前",
+      orchestrationRole: "explorer",
+      workspaceLabel: "日本語ワークスペース🚀",
+      preview: "長いプレビュー本文です🚀",
+    });
+    const fixture = makeFixture([
+      item,
+      makeItem("unicode-group-two", false, {
+        agentLabel: item.agentLabel,
+        sessionShortId: item.sessionShortId,
+        agentSessionKind: item.agentSessionKind,
+        agentSessionValue: item.agentSessionValue,
+        orchestrationId: item.orchestrationId,
+        orchestrationLabel: item.orchestrationLabel,
+        orchestrationRole: item.orchestrationRole,
+        workspaceLabel: item.workspaceLabel,
+        preview: item.preview,
+      }),
+    ]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      setTerminalSize(instance, 24, 10);
+      await sendInput(instance, "j");
+      const frame = instance.lastFrame() ?? "";
+      assert.ok(
+        frame.split("\n").every((line) => displayWidth(line) <= 24),
+        frame,
+      );
+      assert.match(frame, /…/);
     } finally {
       instance.unmount();
     }
@@ -519,6 +785,7 @@ describe("inbox TUI", () => {
       await sendInput(instance, "\r");
       const frame = instance.lastFrame() ?? "";
       assert.ok(frame.split("\n").length <= 20);
+      assert.doesNotMatch(frame, /Orchestration:/);
       assert.equal(
         frame.split("\n").filter((line) => line.includes("↑/↓ or k/j scroll")).length,
         1,
@@ -528,6 +795,42 @@ describe("inbox TUI", () => {
         frame.split("\n").filter((line) => /^line 1-15 of 30/.test(line.trim())).length,
         1,
       );
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("shows orchestration context only for a claimed result", async () => {
+    const claimed = makeItem("claimed-detail", true, {
+      agentSessionKind: "id",
+      agentSessionValue: "claimed-session",
+      orchestrationId: ORCHESTRATION_A,
+      orchestrationLabel: "Explore parser",
+      orchestrationRole: "explorer",
+    });
+    const unclaimed = makeItem("unclaimed-detail", false);
+    const rawText = Array.from({ length: 30 }, (_, index) => `detail-line-${index}`).join("\n");
+    const fixture = makeFixture([claimed, unclaimed], {
+      details: new Map([
+        [claimed.id, makeDetail(claimed, rawText)],
+        [unclaimed.id, makeDetail(unclaimed, rawText)],
+      ]),
+    });
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      setTerminalSize(instance, 80, 20);
+      await sendInput(instance, "\r");
+      let frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Orchestration: Explore parser · explorer · 2f6a3c1e/);
+      assert.match(frame, /line 1-14 of 30/);
+      assert.equal(frame.split("\n").filter((line) => line.includes("detail-line-")).length, 14);
+
+      await sendInput(instance, "\u001b");
+      await sendInput(instance, "j");
+      await sendInput(instance, "\r");
+      frame = instance.lastFrame() ?? "";
+      assert.doesNotMatch(frame, /Orchestration:/);
+      assert.match(frame, /line 1-15 of 30/);
     } finally {
       instance.unmount();
     }
@@ -1039,6 +1342,40 @@ describe("inbox collections", () => {
     }
   });
 
+  test("removes empty orchestration headers and recreates them after restore", async () => {
+    const item = makeItem("grouped-lifecycle", true, {
+      agentSessionKind: "id",
+      agentSessionValue: "lifecycle-session",
+      orchestrationId: ORCHESTRATION_A,
+      orchestrationLabel: "Lifecycle task",
+      orchestrationRole: "fixer",
+    });
+    const fixture = makeFixture([item]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      assert.match(instance.lastFrame() ?? "", /◆ Lifecycle task · 2f6a3c1e · 1 result/);
+
+      await sendInput(instance, "a");
+      let frame = instance.lastFrame() ?? "";
+      assert.doesNotMatch(frame, /◆ Lifecycle task/);
+      assert.match(frame, /No results yet/);
+
+      await sendInput(instance, "\t");
+      frame = instance.lastFrame() ?? "";
+      assert.match(frame, /◆ Lifecycle task · 2f6a3c1e · 1 result/);
+
+      await sendInput(instance, "r");
+      frame = instance.lastFrame() ?? "";
+      assert.doesNotMatch(frame, /◆ Lifecycle task/);
+      assert.match(frame, /No archived results/);
+
+      await sendInput(instance, "\t");
+      assert.match(instance.lastFrame() ?? "", /◆ Lifecycle task · 2f6a3c1e · 1 result/);
+    } finally {
+      instance.unmount();
+    }
+  });
+
   test("swaps archive and restore by collection in the Result view", async () => {
     const fixture = makeFixture([makeArchivedItem("arch-one"), makeItem("active-one")]);
     const instance = render(h(createApp(fixture.port)));
@@ -1255,6 +1592,42 @@ describe("inbox search", () => {
       // The applied search restarted the cursor on the first match.
       await sendInput(instance, "\r");
       assert.deepEqual(fixture.calls.opened, ["alpha-one"]);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("filters claimed results before grouping them", async () => {
+    const fixture = makeFixture([
+      makeItem("alpha-claim", true, {
+        agentSessionKind: "id",
+        agentSessionValue: "alpha-session",
+        orchestrationId: ORCHESTRATION_A,
+        orchestrationLabel: "Alpha task",
+        orchestrationRole: "explorer",
+      }),
+      makeItem("beta-claim", true, {
+        agentSessionKind: "id",
+        agentSessionValue: "beta-session",
+        orchestrationId: ORCHESTRATION_B,
+        orchestrationLabel: "Beta task",
+        orchestrationRole: "fixer",
+      }),
+    ]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      await sendInput(instance, "/");
+      await sendInput(instance, "beta task");
+      await sendInput(instance, "\r");
+
+      const frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Harvest Result Search · Active · 1 match/);
+      assert.match(frame, /◆ Beta task · 8a2c7e10 · 1 result/);
+      assert.doesNotMatch(frame, /Alpha task/);
+      assert.match(frame, /agent-beta-claim/);
+
+      await sendInput(instance, "\r");
+      assert.deepEqual(fixture.calls.opened, ["beta-claim"]);
     } finally {
       instance.unmount();
     }

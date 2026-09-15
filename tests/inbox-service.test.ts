@@ -3,6 +3,7 @@ import { describe, test } from "node:test";
 import { createInboxService } from "../src/app/inbox-service.ts";
 import type { ClipboardProvider, CopyReport } from "../src/clipboard/provider.ts";
 import { ClipboardError } from "../src/clipboard/provider.ts";
+import type { OrchestrationClaim } from "../src/domain/orchestration.ts";
 import type { CaptureInput, HarvestResult } from "../src/domain/result.ts";
 import { openDatabase } from "../src/persistence/database.ts";
 import type { ResultStore } from "../src/persistence/result-store.ts";
@@ -29,8 +30,12 @@ function makeInput(overrides: Partial<CaptureInput> = {}): CaptureInput {
   };
 }
 
-function inserted(store: ResultStore, input: CaptureInput): HarvestResult {
-  const outcome = store.insert(input);
+function inserted(
+  store: ResultStore,
+  input: CaptureInput,
+  claim?: OrchestrationClaim,
+): HarvestResult {
+  const outcome = store.insert(input, claim);
   assert.equal(outcome.status, "inserted");
   if (outcome.status !== "inserted") {
     throw new Error("Expected an inserted result.");
@@ -157,6 +162,51 @@ describe("inbox service", () => {
       const result = inserted(store, makeInput());
       assert.equal(service.list()[0]?.herdrSessionLabel, "default");
       assert.equal(service.open(result.id)?.herdrSessionLabel, "default");
+    } finally {
+      store.close();
+    }
+  });
+
+  test("passes orchestration and native session metadata through list and detail", () => {
+    const { service, store } = makeService();
+    try {
+      const result = inserted(
+        store,
+        makeInput({
+          agentSessionKind: "path",
+          agentSessionValue: "/tmp/native-session.jsonl",
+        }),
+        {
+          id: "2f6a3c1e-8b1d-4a30-9a4f-5b1c2d3e4f50",
+          label: "  Explore parser  ",
+          role: "explorer",
+        },
+      );
+
+      const item = service.list()[0];
+      assert.deepEqual(
+        {
+          orchestrationId: item?.orchestrationId,
+          orchestrationLabel: item?.orchestrationLabel,
+          orchestrationRole: item?.orchestrationRole,
+          agentSessionKind: item?.agentSessionKind,
+          agentSessionValue: item?.agentSessionValue,
+        },
+        {
+          orchestrationId: result.orchestrationId,
+          orchestrationLabel: result.orchestrationLabel,
+          orchestrationRole: result.orchestrationRole,
+          agentSessionKind: result.agentSessionKind,
+          agentSessionValue: result.agentSessionValue,
+        },
+      );
+
+      const detail = service.open(result.id);
+      assert.equal(detail?.orchestrationId, result.orchestrationId);
+      assert.equal(detail?.orchestrationLabel, result.orchestrationLabel);
+      assert.equal(detail?.orchestrationRole, result.orchestrationRole);
+      assert.equal(detail?.agentSessionKind, result.agentSessionKind);
+      assert.equal(detail?.agentSessionValue, result.agentSessionValue);
     } finally {
       store.close();
     }

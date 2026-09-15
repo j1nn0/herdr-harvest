@@ -49,6 +49,9 @@ function searchableFields(result: HarvestResult): string[] {
     result.agentSessionValue,
     sessionShortId(result),
     result.captureSource,
+    result.orchestrationId,
+    result.orchestrationLabel,
+    result.orchestrationRole,
   ].filter((field): field is string => field !== null);
 }
 

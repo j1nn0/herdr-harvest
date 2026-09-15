@@ -95,6 +95,21 @@ const searchableFieldCases: Array<{
     overrides: { captureSource: "needle-capture-source" },
     needle: "needle-capture-source",
   },
+  {
+    field: "orchestration id",
+    overrides: { orchestrationId: "orchestration-needle-id" },
+    needle: "orchestration-needle-id",
+  },
+  {
+    field: "orchestration label",
+    overrides: { orchestrationLabel: "needle orchestration label" },
+    needle: "needle orchestration label",
+  },
+  {
+    field: "orchestration role",
+    overrides: { orchestrationRole: "explorer" },
+    needle: "explorer",
+  },
 ];
 
 describe("result search", () => {
@@ -176,6 +191,19 @@ describe("result search", () => {
     assert.equal(matchesResultSearch(makeResult({ rawText: composed }), decomposed), true);
     assert.equal(matchesResultSearch(makeResult({ rawText: decomposed }), composed), true);
     assert.equal(matchesResultSearch(makeResult({ rawText: composed }), "CAFE\u0301"), true);
+  });
+
+  test("matches orchestration metadata with the existing normalization", () => {
+    const orchestrationId = "2f6a3c1e-8b1d-4a30-9a4f-5b1c2d3e4f50";
+    const result = makeResult({
+      orchestrationId,
+      orchestrationLabel: "Café parser",
+      orchestrationRole: "fixer",
+    });
+
+    assert.equal(matchesResultSearch(result, orchestrationId.toUpperCase()), true);
+    assert.equal(matchesResultSearch(result, "cafe\u0301 parser"), true);
+    assert.equal(matchesResultSearch(result, "FIXER"), true);
   });
 
   test("matches kana voiced marks across NFC forms without unvoicing", () => {

@@ -101,6 +101,8 @@ It is intentionally a plain script rather than a declared plugin action, so it c
 
 The same script is also the orchestration integration surface, supporting `--capabilities` plus the three `--orchestration-*` claim options (`--orchestration-id`, `--orchestration-label`, and `--orchestration-role`); see [docs/orchestration-capture.md](docs/orchestration-capture.md)
 
+Claimed Results are grouped in the Result Inbox by orchestration and native agent session, and their orchestration id, label, and role are searchable.
+
 ## Opening the inbox
 
 Via the plugin action:

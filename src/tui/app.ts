@@ -1,5 +1,6 @@
 import { type Key, useApp, useInput, useStdout } from "ink";
 import React, { type FC, useEffect, useRef, useState } from "react";
+import { buildInboxGrouping, type InboxDisplayRow } from "../app/inbox-groups.ts";
 import type {
   InboxDetail,
   InboxItem,
@@ -12,6 +13,7 @@ import type { CopyReport } from "../clipboard/provider.ts";
 import { ClipboardError } from "../clipboard/provider.ts";
 import {
   clampListOffset,
+  displayRowIndexForCursor,
   type InboxSearchView,
   InboxView,
   inboxViewportLines,
@@ -66,7 +68,8 @@ export function createApp(port: InboxPort): FC {
     const [scrollOffset, setScrollOffset] = useState(0);
     const [status, setStatus] = useState<StatusMessage | null>(null);
     const { cursor, listOffset } = position;
-    const viewport = resultViewportLines(stdout.rows);
+    const hasOrchestrationContext = detail !== null && detail.orchestrationId !== null;
+    const viewport = resultViewportLines(stdout.rows, hasOrchestrationContext);
     const columns = stdout.columns;
     const inboxWidth =
       columns !== undefined && Number.isFinite(columns) ? Math.max(0, Math.floor(columns)) : 80;
@@ -74,6 +77,16 @@ export function createApp(port: InboxPort): FC {
     const inboxMetadataLines = selectedMetadataLines(items[cursor], inboxContentWidth).length;
     const inboxCapacity = inboxViewportLines(stdout.rows, inboxMetadataLines, status !== null);
     const inboxPageStep = Math.max(1, inboxCapacity);
+    const inboxRows = buildInboxGrouping(items);
+    const visibleListOffset = clampListOffset(
+      listOffsetForCursor(
+        displayRowIndexForCursor(inboxRows, cursor, items),
+        listOffset,
+        inboxCapacity,
+      ),
+      inboxRows.length,
+      inboxCapacity,
+    );
 
     useEffect(() => {
       if (status === null) {
@@ -91,7 +104,14 @@ export function createApp(port: InboxPort): FC {
      */
     const moveInboxPosition = (delta: number): void => {
       setPosition((current) =>
-        nextInboxPosition(current, current.cursor + delta, items.length, inboxCapacity),
+        nextInboxPosition(
+          current,
+          current.cursor + delta,
+          items.length,
+          items,
+          inboxRows,
+          inboxCapacity,
+        ),
       );
     };
 
@@ -103,9 +123,13 @@ export function createApp(port: InboxPort): FC {
     const setInboxPosition = (
       nextCursor: number,
       itemCount = items.length,
+      rows: readonly InboxDisplayRow[] = inboxRows,
+      positionItems: readonly InboxItem[] = items,
       capacity = inboxCapacity,
     ): void => {
-      setPosition((current) => nextInboxPosition(current, nextCursor, itemCount, capacity));
+      setPosition((current) =>
+        nextInboxPosition(current, nextCursor, itemCount, positionItems, rows, capacity),
+      );
     };
 
     /**
@@ -241,13 +265,14 @@ export function createApp(port: InboxPort): FC {
       // events must list the session the last event left behind.
       const nextItems = listForSearch(searchRef.current);
       const nextCursor = clampCursor(cursor, nextItems.length);
+      const nextRows = buildInboxGrouping(nextItems);
       const nextCapacity = inboxViewportLines(
         stdout.rows,
         selectedMetadataLines(nextItems[nextCursor], inboxContentWidth).length,
         hasStatus,
       );
       setItems(nextItems);
-      setInboxPosition(nextCursor, nextItems.length, nextCapacity);
+      setInboxPosition(nextCursor, nextItems.length, nextRows, nextItems, nextCapacity);
       return nextItems;
     };
 
@@ -536,12 +561,13 @@ export function createApp(port: InboxPort): FC {
 
     return h(InboxView, {
       items,
+      rows: inboxRows,
       cursor,
       width: inboxWidth,
       mode,
       status,
       search: searchView,
-      offset: listOffset,
+      offset: visibleListOffset,
       limit: inboxCapacity,
       onOpen: openSelected,
       onCopy: () => {
@@ -706,12 +732,15 @@ function nextInboxPosition(
   current: InboxPosition,
   nextCursor: number,
   itemCount: number,
+  items: readonly InboxItem[],
+  rows: readonly InboxDisplayRow[],
   capacity: number,
 ): InboxPosition {
   const cursor = clampCursor(nextCursor, itemCount);
+  const selectedRow = displayRowIndexForCursor(rows, cursor, items);
   const listOffset = clampListOffset(
-    listOffsetForCursor(cursor, current.listOffset, capacity),
-    itemCount,
+    listOffsetForCursor(selectedRow, current.listOffset, capacity),
+    rows.length,
     capacity,
   );
   if (cursor === current.cursor && listOffset === current.listOffset) {
