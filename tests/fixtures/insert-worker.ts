@@ -44,7 +44,7 @@ try {
       herdrSessionKey: "/tmp/herdr.sock",
       herdrSessionLabel: "default",
       captureSource: "recent-unwrapped",
-      captureLineCount: 400,
+      requestedLineCount: 400,
       rawText: "racing completion snapshot",
     },
     claimId === undefined

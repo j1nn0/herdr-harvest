@@ -24,7 +24,7 @@ function makeInput(overrides: Partial<CaptureInput> = {}): CaptureInput {
     herdrSessionKey: "/tmp/herdr/sessions/default/herdr.sock",
     herdrSessionLabel: "default",
     captureSource: "recent-unwrapped",
-    captureLineCount: 12,
+    requestedLineCount: 12,
     rawText: "captured output",
     ...overrides,
   };
@@ -287,7 +287,7 @@ describe("inbox service", () => {
       assert.equal(detail?.id, result.id);
       assert.equal(detail?.rawText, input.rawText);
       assert.equal(detail?.captureSource, input.captureSource);
-      assert.equal(detail?.captureLineCount, input.captureLineCount);
+      assert.equal(detail?.requestedLineCount, input.requestedLineCount);
       assert.equal(detail?.paneId, input.paneId);
       assert.equal(detail?.unread, false);
       assert.equal(service.list()[0]?.unread, false);

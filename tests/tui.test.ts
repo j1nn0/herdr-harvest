@@ -80,7 +80,7 @@ function makeDetail(item: InboxItem, rawText = `first-${item.id}\nsecond-${item.
     ...item,
     rawText,
     captureSource: "test",
-    captureLineCount: rawText.split("\n").length,
+    requestedLineCount: 400,
     paneId: `pane-${item.id}`,
   };
 }
@@ -101,7 +101,7 @@ function makeCaptureInput(overrides: Partial<CaptureInput> = {}): CaptureInput {
     herdrSessionKey: "/tmp/herdr/default.sock",
     herdrSessionLabel: "default",
     captureSource: "recent-unwrapped",
-    captureLineCount: 3,
+    requestedLineCount: 3,
     rawText: "captured output",
     ...overrides,
   };

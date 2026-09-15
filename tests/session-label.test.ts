@@ -22,7 +22,7 @@ function makeResult(overrides: Partial<HarvestResult> = {}): HarvestResult {
     herdrSessionKey: "socket",
     herdrSessionLabel: "default",
     captureSource: "test",
-    captureLineCount: 1,
+    requestedLineCount: 1,
     rawText: "output",
     readAtMs: null,
     archivedAtMs: null,

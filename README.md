@@ -29,7 +29,7 @@ Harvest turns "go back and find it" into "open the inbox".
 
 This is the most important thing to understand about Harvest v0.1.
 
-What Harvest stores is a **completion snapshot**: the last N rendered rows of the pane at the moment the agent finished. It is *not* a parsed final assistant message.
+What Harvest stores is a **completion snapshot**: the trailing rendered rows available at the moment the agent finished, requested up to `HARVEST_CAPTURE_LINES` rows. It is *not* a parsed final assistant message.
 
 That means a snapshot typically contains the agent's closing output *plus* whatever else was on screen — the agent's own UI chrome, status bars, banners, and part of the preceding conversation. Harvest deliberately does not try to guess where the assistant's final message begins and ends.
 
@@ -227,11 +227,13 @@ Nothing is written to the plugin checkout, and nothing leaves your machine. The 
 
 | Variable                 | Default            | Meaning                                                        |
 | ------------------------ | ------------------ | -------------------------------------------------------------- |
-| `HARVEST_CAPTURE_LINES`  | `400`              | Terminal rows to capture (1–10000)                              |
+| `HARVEST_CAPTURE_LINES`  | `400`              | Requested terminal-row count passed to Herdr (1–10000)          |
 | `HARVEST_CAPTURE_SOURCE` | `recent-unwrapped` | Herdr read source: `visible`, `recent`, `recent-unwrapped`, `detection` |
 | `HARVEST_STATE_DIR`      | —                  | Overrides `HERDR_PLUGIN_STATE_DIR`, mainly for tests            |
 
 An invalid value falls back to the default *and* reports a warning on stderr rather than being silently ignored.
+
+`HARVEST_CAPTURE_LINES` is a requested row limit, not a guarantee of rows returned. Verified Herdr releases currently clamp read requests above 1000 logical rows server-side; this is an observed upstream implementation constraint, not a documented Herdr protocol limit, so Harvest passes requests through without normalizing them to 1000.
 
 ## Architecture
 

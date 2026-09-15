@@ -17,7 +17,8 @@ export interface CaptureInput {
   herdrSessionKey: string | null;
   herdrSessionLabel: string | null;
   captureSource: string;
-  captureLineCount: number;
+  /** Number of terminal rows Harvest requested from Herdr, not rows returned. */
+  requestedLineCount: number;
   rawText: string;
 }
 

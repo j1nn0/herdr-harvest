@@ -123,7 +123,8 @@ export class SqliteResultStore implements ResultStore {
       input.agentSessionKind,
       input.agentSessionValue,
       input.captureSource,
-      input.captureLineCount,
+      // The legacy capture_line_count column stores the requested count.
+      input.requestedLineCount,
       input.rawText,
       rawContentHash,
       key,
@@ -383,7 +384,7 @@ function mapRow(row: SqlRow): HarvestResult {
     herdrSessionKey: row.herdr_session_key as string | null,
     herdrSessionLabel: row.herdr_session_label as string | null,
     captureSource: row.capture_source as string,
-    captureLineCount: row.capture_line_count as number,
+    requestedLineCount: row.capture_line_count as number,
     rawText: row.raw_text as string,
     contentHash: row.content_hash as string,
     dedupKey: row.dedup_key as string,

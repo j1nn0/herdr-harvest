@@ -28,7 +28,7 @@ function makeInput(overrides: Partial<CaptureInput> = {}): CaptureInput {
     herdrSessionKey: "/tmp/herdr/sessions/a/herdr.sock",
     herdrSessionLabel: "a",
     captureSource: "recent-unwrapped",
-    captureLineCount: 400,
+    requestedLineCount: 400,
     rawText: "completion output",
     ...overrides,
   };
@@ -194,7 +194,7 @@ test("upgrades a v1 database without changing legacy rows", () => {
     agentSessionKind: "path",
     agentSessionValue: "/tmp/legacy-session.jsonl",
     captureSource: "recent-unwrapped",
-    captureLineCount: 321,
+    requestedLineCount: 321,
     rawText: "  legacy output  \\n世界 🚀\\n",
     contentHash: "legacy-content-hash",
     dedupKey: "legacy-dedup-key",
@@ -239,7 +239,7 @@ test("upgrades a v1 database without changing legacy rows", () => {
       legacy.agentSessionKind,
       legacy.agentSessionValue,
       legacy.captureSource,
-      legacy.captureLineCount,
+      legacy.requestedLineCount,
       legacy.rawText,
       legacy.contentHash,
       legacy.dedupKey,
@@ -273,7 +273,7 @@ test("upgrades a v1 database without changing legacy rows", () => {
       herdrSessionKey: null,
       herdrSessionLabel: null,
       captureSource: legacy.captureSource,
-      captureLineCount: legacy.captureLineCount,
+      requestedLineCount: legacy.requestedLineCount,
       rawText: legacy.rawText,
       contentHash: legacy.contentHash,
       dedupKey: legacy.dedupKey,
@@ -309,7 +309,7 @@ test("upgrades a v2 database without changing legacy rows", () => {
     agentSessionKind: "id",
     agentSessionValue: "v2-session",
     captureSource: "detection",
-    captureLineCount: 123,
+    requestedLineCount: 123,
     rawText: "  v2 output  \\n世界 🚀\\n",
     contentHash: "v2-content-hash",
     dedupKey: "v2-dedup-key",
@@ -360,7 +360,7 @@ test("upgrades a v2 database without changing legacy rows", () => {
       legacy.agentSessionKind,
       legacy.agentSessionValue,
       legacy.captureSource,
-      legacy.captureLineCount,
+      legacy.requestedLineCount,
       legacy.rawText,
       legacy.contentHash,
       legacy.dedupKey,
@@ -394,7 +394,7 @@ test("upgrades a v2 database without changing legacy rows", () => {
       herdrSessionKey: legacy.herdrSessionKey,
       herdrSessionLabel: legacy.herdrSessionLabel,
       captureSource: legacy.captureSource,
-      captureLineCount: legacy.captureLineCount,
+      requestedLineCount: legacy.requestedLineCount,
       rawText: legacy.rawText,
       contentHash: legacy.contentHash,
       dedupKey: legacy.dedupKey,
@@ -431,7 +431,7 @@ test("upgrades a v3 database without changing legacy rows", () => {
     agentSessionKind: "id",
     agentSessionValue: "v3-session",
     captureSource: "detection",
-    captureLineCount: 12,
+    requestedLineCount: 12,
     rawText: "  v3 output  \\n世界 🚀\\n",
     contentHash: "v3-content-hash",
     dedupKey: "v3-dedup-key",
@@ -484,7 +484,7 @@ test("upgrades a v3 database without changing legacy rows", () => {
       legacy.agentSessionKind,
       legacy.agentSessionValue,
       legacy.captureSource,
-      legacy.captureLineCount,
+      legacy.requestedLineCount,
       legacy.rawText,
       legacy.contentHash,
       legacy.dedupKey,
@@ -517,7 +517,7 @@ test("upgrades a v3 database without changing legacy rows", () => {
       herdrSessionKey: legacy.herdrSessionKey,
       herdrSessionLabel: legacy.herdrSessionLabel,
       captureSource: legacy.captureSource,
-      captureLineCount: legacy.captureLineCount,
+      requestedLineCount: legacy.requestedLineCount,
       rawText: legacy.rawText,
       contentHash: legacy.contentHash,
       dedupKey: legacy.dedupKey,
@@ -598,7 +598,7 @@ describe("SqliteResultStore", () => {
           herdrSessionKey: result.herdrSessionKey,
           herdrSessionLabel: result.herdrSessionLabel,
           captureSource: result.captureSource,
-          captureLineCount: result.captureLineCount,
+          requestedLineCount: result.requestedLineCount,
           rawText: result.rawText,
           readAtMs: result.readAtMs,
           archivedAtMs: result.archivedAtMs,
@@ -625,18 +625,38 @@ describe("SqliteResultStore", () => {
     }
   });
 
-  test("deduplicates identical input and stores different input once each", () => {
+  test("stores the requested line count independently of returned text", () => {
+    const db = openDatabase(":memory:");
+    const store = new SqliteResultStore(db);
+    try {
+      const input = makeInput({ requestedLineCount: 5000, rawText: "one returned row" });
+      const result = inserted(store.insert(input));
+      const row = db
+        .prepare("SELECT capture_line_count FROM results WHERE id = ?")
+        .get(result.id) as { capture_line_count?: number } | undefined;
+
+      assert.equal(result.requestedLineCount, 5000);
+      assert.equal(row?.capture_line_count, 5000);
+      assert.equal(versionOf(db), 4);
+      assert.ok(resultColumnNames(db).includes("capture_line_count"));
+    } finally {
+      store.close();
+    }
+  });
+
+  test("deduplicates identical identity and content despite different requested counts", () => {
     const db = openDatabase(":memory:");
     const store = new SqliteResultStore(db);
     try {
       const input = makeInput();
       const first = store.insert(input);
-      const second = store.insert(input);
+      const second = store.insert(makeInput({ requestedLineCount: 5000 }));
       const different = store.insert(makeInput({ rawText: "different output" }));
 
       assert.equal(first.status, "inserted");
       assert.equal(second.status, "duplicate");
       assert.equal(second.result.id, first.result.id);
+      assert.equal(second.result.requestedLineCount, first.result.requestedLineCount);
       assert.equal(different.status, "inserted");
       assert.equal(store.list({ includeArchived: true }).length, 2);
     } finally {

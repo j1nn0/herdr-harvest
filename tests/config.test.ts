@@ -29,11 +29,11 @@ describe("loadConfig", () => {
   test("honors valid capture settings", () => {
     const loaded = loadConfig({
       HERDR_PLUGIN_STATE_DIR: "/tmp/plugin-state",
-      HARVEST_CAPTURE_LINES: "1234",
+      HARVEST_CAPTURE_LINES: "5000",
       HARVEST_CAPTURE_SOURCE: "detection",
     });
 
-    assert.equal(loaded.config.captureLines, 1234);
+    assert.equal(loaded.config.captureLines, 5000);
     assert.equal(loaded.config.captureSource, "detection");
     assert.equal(loaded.config.databasePath, join("/tmp/plugin-state", "harvest.db"));
     assert.equal(loaded.config.herdrSessionKey, null);

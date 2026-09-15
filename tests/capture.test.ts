@@ -82,7 +82,7 @@ describe("captureCompletion", () => {
           herdrSessionKey: result.herdrSessionKey,
           herdrSessionLabel: result.herdrSessionLabel,
           captureSource: result.captureSource,
-          captureLineCount: result.captureLineCount,
+          requestedLineCount: result.requestedLineCount,
           rawText: result.rawText,
         },
         {
@@ -98,7 +98,7 @@ describe("captureCompletion", () => {
           herdrSessionKey: "/tmp/herdr/sessions/nightly/herdr.sock",
           herdrSessionLabel: "nightly",
           captureSource: "detection",
-          captureLineCount: 120,
+          requestedLineCount: 120,
           rawText,
         },
       );
@@ -112,6 +112,37 @@ describe("captureCompletion", () => {
         { operation: "workspace.list", target: null, options: null },
       ]);
       assert.equal(store.list({ includeArchived: true }).length, 1);
+    } finally {
+      close();
+    }
+  });
+
+  test("passes a high requested line count through to Herdr unchanged", async () => {
+    const client = createMockHerdrClient({
+      agents: { "w1G:p1": AGENT_INFO },
+      agentReads: { "w1G:p1": "small capture" },
+    });
+    const { store, close } = makeStore();
+
+    try {
+      const result = capturedResult(
+        await runCapture(client, store, "w1G:p1", undefined, {
+          ...CONFIG,
+          captureLines: 5000,
+        }),
+      );
+
+      assert.equal(result.requestedLineCount, 5000);
+      assert.deepEqual(
+        client.calls.filter((call) => call.operation === "agent.read"),
+        [
+          {
+            operation: "agent.read",
+            target: "w1G:p1",
+            options: { source: "detection", lines: 5000 },
+          },
+        ],
+      );
     } finally {
       close();
     }
@@ -561,11 +592,12 @@ async function runCapture(
   store: SqliteResultStore,
   paneId = "w1G:p1",
   orchestration?: OrchestrationClaim,
+  config: HarvestConfig = CONFIG,
 ): Promise<CaptureOutcome> {
   const deps: CaptureDeps = {
     client,
     store,
-    config: CONFIG,
+    config,
     now: () => 1_700_000_000_000,
   };
   return captureCompletion(deps, { paneId, orchestration });

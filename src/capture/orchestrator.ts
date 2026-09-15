@@ -90,7 +90,7 @@ export async function captureCompletion(
       herdrSessionKey: deps.config.herdrSessionKey,
       herdrSessionLabel: deps.config.herdrSessionLabel,
       captureSource: deps.config.captureSource,
-      captureLineCount: deps.config.captureLines,
+      requestedLineCount: deps.config.captureLines,
       rawText,
     };
     const inserted = deps.store.insert(input, request.orchestration);

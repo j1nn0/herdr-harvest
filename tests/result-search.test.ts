@@ -24,7 +24,7 @@ function makeResult(overrides: Partial<HarvestResult> = {}): HarvestResult {
     herdrSessionKey: "zzsessionkey",
     herdrSessionLabel: "zzsessionlabel",
     captureSource: "zzcapturesource",
-    captureLineCount: 3,
+    requestedLineCount: 3,
     rawText: "zzrawtext",
     contentHash: "zzcontenthash",
     dedupKey: "zzdedupkey",

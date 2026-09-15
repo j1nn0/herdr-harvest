@@ -73,7 +73,7 @@ function makeDetail(item: InboxItem, rawText = `first-${item.id}\nsecond-${item.
     ...item,
     rawText,
     captureSource: "test",
-    captureLineCount: rawText.split("\n").length,
+    requestedLineCount: 400,
     paneId: `pane-${item.id}`,
   };
 }

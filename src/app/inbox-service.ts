@@ -28,7 +28,7 @@ export interface InboxItem {
 export interface InboxDetail extends InboxItem {
   rawText: string;
   captureSource: string;
-  captureLineCount: number;
+  requestedLineCount: number;
   paneId: string;
 }
 
@@ -187,7 +187,7 @@ function toDetail(result: HarvestResult): InboxDetail {
     ...toItem(result),
     rawText: result.rawText,
     captureSource: result.captureSource,
-    captureLineCount: result.captureLineCount,
+    requestedLineCount: result.requestedLineCount,
     paneId: result.paneId,
   };
 }
