@@ -97,7 +97,9 @@ Harvest also ships a manual capture path for deterministic testing, so you do no
 node src/bin/capture.ts --pane <pane-id>
 ```
 
-It is intentionally a plain script rather than a declared plugin action, so it adds no user-facing surface.
+It is intentionally a plain script rather than a declared plugin action, so it can be invoked directly for manual capture or orchestration.
+
+The same script is also the orchestration integration surface, supporting `--capabilities` plus the three `--orchestration-*` claim options (`--orchestration-id`, `--orchestration-label`, and `--orchestration-role`); see [docs/orchestration-capture.md](docs/orchestration-capture.md)
 
 ## Opening the inbox
 
