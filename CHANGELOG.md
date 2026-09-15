@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-09-15
+
 ### Changed
 
 - Harvest now uses SDK v0.2 runtime validation for native agent-session payloads, and SDK-provided protocol fixtures keep process-level tests aligned with the SDK wire contract.
@@ -71,7 +73,8 @@ First public release.
 - A completion inferred only from `blocked → idle` is not captured, because that transition can equally mean an approval prompt was cancelled.
 - Archived results stay in the database but cannot yet be browsed or restored from the inbox.
 
-[Unreleased]: https://github.com/j1nn0/herdr-harvest/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/j1nn0/herdr-harvest/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/j1nn0/herdr-harvest/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/j1nn0/herdr-harvest/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/j1nn0/herdr-harvest/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/j1nn0/herdr-harvest/compare/v0.1.1...v0.2.0
