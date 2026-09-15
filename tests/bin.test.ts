@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, test } from "node:test";
@@ -10,6 +10,7 @@ import { promisify } from "node:util";
 import { openDatabase } from "../src/persistence/database.ts";
 import { SqliteResultStore } from "../src/persistence/result-store.ts";
 import { RUNTIME_LOCATOR_FILE_NAME } from "../src/runtime/locator.ts";
+import { removeDirectory } from "./helpers/remove-directory.ts";
 import { spawnableCommand } from "./helpers/spawnable-command.ts";
 
 const execFileAsync = promisify(execFile);
@@ -702,7 +703,7 @@ function makeFixture(): Fixture {
       HERDR_BIN_PATH: stubPath,
       HERDR_PLUGIN_EVENT: "pane.agent_status_changed",
     },
-    cleanup: () => rmSync(stateDirectory, { recursive: true, force: true }),
+    cleanup: () => removeDirectory(stateDirectory),
   };
 }
 
