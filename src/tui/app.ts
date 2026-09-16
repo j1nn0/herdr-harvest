@@ -1,10 +1,6 @@
 import { type Key, useApp, useInput, useStdout } from "ink";
 import React, { type FC, useEffect, useRef, useState } from "react";
-import {
-  buildInboxGrouping,
-  cursorAfterVisualMove,
-  type InboxDisplayRow,
-} from "../app/inbox-groups.ts";
+import { buildInboxGrouping, type InboxDisplayRow } from "../app/inbox-groups.ts";
 import type {
   InboxDetail,
   InboxItem,
@@ -18,8 +14,16 @@ import { ClipboardError } from "../clipboard/provider.ts";
 import type { InboxDisplayConfig } from "../config/inbox-display-config.ts";
 import { DEFAULT_INBOX_DISPLAY_CONFIG } from "../config/inbox-display-config.ts";
 import {
+  cursorForFocus,
+  displayRowIndexForFocus,
+  focusAfterVisualMove,
+  type InboxFocus,
+  itemForFocus,
+  reconcileInboxFocus,
+  visibleInboxRows,
+} from "./inbox-focus.ts";
+import {
   clampListOffset,
-  displayRowIndexForCursor,
   type InboxSearchView,
   InboxView,
   inboxViewportLines,
@@ -41,6 +45,7 @@ type View = "inbox" | "result";
  */
 interface InboxPosition {
   cursor: number;
+  focus: InboxFocus | null;
   listOffset: number;
 }
 
@@ -72,31 +77,41 @@ export function createApp(
     const [mode, setMode] = useState<InboxMode>("active");
     const [search, setSearch] = useState<SearchState | null>(null);
     const [items, setItems] = useState<InboxItem[]>(() => port.list("active"));
-    const [position, setPosition] = useState<InboxPosition>({ cursor: 0, listOffset: 0 });
+    const [position, setPosition] = useState<InboxPosition>({
+      cursor: 0,
+      focus: null,
+      listOffset: 0,
+    });
+    const [collapsedOrchestrations, setCollapsedOrchestrations] = useState<ReadonlySet<string>>(
+      () => new Set(),
+    );
+    const collapsedRef = useRef<ReadonlySet<string>>(new Set());
+    collapsedRef.current = collapsedOrchestrations;
     const [detail, setDetail] = useState<InboxDetail | null>(null);
     const [scrollOffset, setScrollOffset] = useState(0);
     const [status, setStatus] = useState<StatusMessage | null>(null);
-    const { cursor, listOffset } = position;
+    const { cursor, focus, listOffset } = position;
     const hasOrchestrationContext = detail !== null && detail.orchestrationId !== null;
     const viewport = resultViewportLines(stdout.rows, hasOrchestrationContext);
     const columns = stdout.columns;
     const inboxWidth =
       columns !== undefined && Number.isFinite(columns) ? Math.max(0, Math.floor(columns)) : 80;
     const inboxContentWidth = Math.max(0, inboxWidth - 2);
+    const allInboxRows = buildInboxGrouping(items);
+    const searchApplied = isSearchQueryActive(search?.query ?? "");
+    const inboxRows = visibleInboxRows(allInboxRows, collapsedOrchestrations, searchApplied);
+    const effectiveFocus = reconcileInboxFocus(items, inboxRows, focus, cursor);
+    const effectiveCursor = cursorForFocus(items, effectiveFocus, cursor);
     const inboxMetadataLines = selectedMetadataLines(
-      items[cursor],
+      itemForFocus(items, effectiveFocus),
       inboxContentWidth,
       displayConfig,
     ).length;
     const inboxCapacity = inboxViewportLines(stdout.rows, inboxMetadataLines, status !== null);
     const inboxPageStep = Math.max(1, inboxCapacity);
-    const inboxRows = buildInboxGrouping(items);
+    const selectedDisplayRow = Math.max(0, displayRowIndexForFocus(inboxRows, effectiveFocus));
     const visibleListOffset = clampListOffset(
-      listOffsetForCursor(
-        displayRowIndexForCursor(inboxRows, cursor, items),
-        listOffset,
-        inboxCapacity,
-      ),
+      listOffsetForCursor(selectedDisplayRow, listOffset, inboxCapacity),
       inboxRows.length,
       inboxCapacity,
     );
@@ -116,33 +131,15 @@ export function createApp(
      * though React has not committed a render in between.
      */
     const moveInboxPosition = (delta: number): void => {
-      setPosition((current) =>
-        nextInboxPosition(
-          current,
-          cursorAfterVisualMove(items, inboxRows, current.cursor, delta),
-          items.length,
-          items,
-          inboxRows,
-          inboxCapacity,
-        ),
-      );
-    };
-
-    /**
-     * Absolute placement for refresh paths that already know the next item count
-     * and capacity. Cursor and list offset are still computed together from one
-     * queued state, so the two can never drift apart.
-     */
-    const setInboxPosition = (
-      nextCursor: number,
-      itemCount = items.length,
-      rows: readonly InboxDisplayRow[] = inboxRows,
-      positionItems: readonly InboxItem[] = items,
-      capacity = inboxCapacity,
-    ): void => {
-      setPosition((current) =>
-        nextInboxPosition(current, nextCursor, itemCount, positionItems, rows, capacity),
-      );
+      setPosition((current) => {
+        const rows = visibleInboxRows(
+          buildInboxGrouping(items),
+          collapsedRef.current,
+          isSearchQueryActive(searchRef.current?.query ?? ""),
+        );
+        const nextFocus = focusAfterVisualMove(items, rows, current.focus, current.cursor, delta);
+        return nextInboxPosition(current, nextFocus, items, rows, inboxCapacity);
+      });
     };
 
     /**
@@ -183,7 +180,7 @@ export function createApp(
       setSearch(next);
       if (options.relist === true) {
         setItems(listForSearch(next));
-        setPosition({ cursor: 0, listOffset: 0 });
+        setPosition({ cursor: 0, focus: null, listOffset: 0 });
         setStatus(null);
       }
       return next;
@@ -198,7 +195,7 @@ export function createApp(
       modeRef.current = next;
       setMode(next);
       setItems(listForSearch(null));
-      setPosition({ cursor: 0, listOffset: 0 });
+      setPosition({ cursor: 0, focus: null, listOffset: 0 });
       setStatus(null);
     };
 
@@ -277,15 +274,25 @@ export function createApp(
       // The ref, not the render closure: a refresh inside a burst of input
       // events must list the session the last event left behind.
       const nextItems = listForSearch(searchRef.current);
-      const nextCursor = clampCursor(cursor, nextItems.length);
-      const nextRows = buildInboxGrouping(nextItems);
-      const nextCapacity = inboxViewportLines(
-        stdout.rows,
-        selectedMetadataLines(nextItems[nextCursor], inboxContentWidth, displayConfig).length,
-        hasStatus,
+      const nextRows = visibleInboxRows(
+        buildInboxGrouping(nextItems),
+        collapsedRef.current,
+        isSearchQueryActive(searchRef.current?.query ?? ""),
       );
       setItems(nextItems);
-      setInboxPosition(nextCursor, nextItems.length, nextRows, nextItems, nextCapacity);
+      setPosition((current) => {
+        const nextFocus = reconcileInboxFocus(nextItems, nextRows, current.focus, current.cursor);
+        const nextCapacity = inboxViewportLines(
+          stdout.rows,
+          selectedMetadataLines(
+            itemForFocus(nextItems, nextFocus),
+            inboxContentWidth,
+            displayConfig,
+          ).length,
+          hasStatus,
+        );
+        return nextInboxPosition(current, nextFocus, nextItems, nextRows, nextCapacity);
+      });
       return nextItems;
     };
 
@@ -303,9 +310,12 @@ export function createApp(
     };
 
     const openSelected = (): void => {
-      const item = items[cursor];
+      if (effectiveFocus?.kind !== "result") {
+        return;
+      }
+      const item = itemForFocus(items, effectiveFocus);
       if (item === undefined) {
-        setStatus({ text: "There are no results to open.", error: true });
+        refreshItems(true);
         return;
       }
 
@@ -462,11 +472,47 @@ export function createApp(
           moveInboxPosition(inboxPageStep);
           return;
         }
+        if (key.leftArrow || key.rightArrow || input === " ") {
+          if (searchRef.current !== null && isSearchQueryActive(searchRef.current.query)) {
+            return;
+          }
+          if (effectiveFocus?.kind !== "orchestration") {
+            return;
+          }
+          const orchestrationId = effectiveFocus.orchestrationId;
+          const isCollapsed = collapsedRef.current.has(orchestrationId);
+          const toggles = input === " ";
+          const shouldCollapse = key.leftArrow || (toggles && !isCollapsed);
+          const shouldExpand = key.rightArrow || (toggles && isCollapsed);
+          if (
+            (!shouldCollapse && !shouldExpand) ||
+            (key.leftArrow && isCollapsed) ||
+            (key.rightArrow && !isCollapsed)
+          ) {
+            return;
+          }
+          const nextCollapsed = new Set(collapsedRef.current);
+          if (shouldCollapse) {
+            nextCollapsed.add(orchestrationId);
+          } else {
+            nextCollapsed.delete(orchestrationId);
+          }
+          collapsedRef.current = nextCollapsed;
+          setCollapsedOrchestrations(nextCollapsed);
+          const nextRows = visibleInboxRows(buildInboxGrouping(items), nextCollapsed, false);
+          setPosition((current) =>
+            nextInboxPosition(current, effectiveFocus, items, nextRows, inboxCapacity),
+          );
+          return;
+        }
         if (key.return || input === "\r") {
           openSelected();
           return;
         }
-        const selected = items[cursor];
+        const selected = itemForFocus(items, effectiveFocus);
+        if (effectiveFocus?.kind !== "result") {
+          return;
+        }
         if (input === "y") {
           if (selected === undefined) {
             setStatus({ text: "There are no results to copy.", error: true });
@@ -575,7 +621,9 @@ export function createApp(
     return h(InboxView, {
       items,
       rows: inboxRows,
-      cursor,
+      cursor: effectiveCursor,
+      focus: effectiveFocus,
+      collapsedOrchestrations,
       width: inboxWidth,
       mode,
       status,
@@ -585,13 +633,13 @@ export function createApp(
       limit: inboxCapacity,
       onOpen: openSelected,
       onCopy: () => {
-        const item = items[cursor];
+        const item = itemForFocus(items, effectiveFocus);
         if (item !== undefined) {
           copy(item.id, undefined);
         }
       },
       onArchive: () => {
-        const item = items[cursor];
+        const item = itemForFocus(items, effectiveFocus);
         if (item !== undefined) {
           archive(item.id, false);
         }
@@ -620,13 +668,6 @@ export function formatBytes(byteCount: number): string {
   }
   const rounded = value >= 10 ? value.toFixed(1) : value.toFixed(2);
   return `${rounded.replace(/\.0+$|(?<=\.\d)0+$/, "")} ${units[unitIndex] ?? "GB"}`;
-}
-
-function clampCursor(cursor: number, itemCount: number): number {
-  if (itemCount === 0) {
-    return 0;
-  }
-  return Math.min(Math.max(0, cursor), itemCount - 1);
 }
 
 /** One ordered step the query line performs while it owns the keyboard. */
@@ -744,23 +785,40 @@ function isMouseReport(input: string): boolean {
  */
 function nextInboxPosition(
   current: InboxPosition,
-  nextCursor: number,
-  itemCount: number,
+  nextFocus: InboxFocus | null,
   items: readonly InboxItem[],
   rows: readonly InboxDisplayRow[],
   capacity: number,
 ): InboxPosition {
-  const cursor = clampCursor(nextCursor, itemCount);
-  const selectedRow = displayRowIndexForCursor(rows, cursor, items);
+  const focus = reconcileInboxFocus(items, rows, nextFocus, current.cursor);
+  const cursor = cursorForFocus(items, focus, current.cursor);
+  const selectedRow = Math.max(0, displayRowIndexForFocus(rows, focus));
   const listOffset = clampListOffset(
     listOffsetForCursor(selectedRow, current.listOffset, capacity),
     rows.length,
     capacity,
   );
-  if (cursor === current.cursor && listOffset === current.listOffset) {
+  if (
+    cursor === current.cursor &&
+    focusEqual(focus, current.focus) &&
+    listOffset === current.listOffset
+  ) {
     return current;
   }
-  return { cursor, listOffset };
+  return { cursor, focus, listOffset };
+}
+
+function focusEqual(left: InboxFocus | null, right: InboxFocus | null): boolean {
+  return (
+    left?.kind === right?.kind &&
+    (left === null ||
+      right === null ||
+      (left.kind === "result" && right.kind === "result"
+        ? left.resultId === right.resultId
+        : left.kind === "orchestration" &&
+          right.kind === "orchestration" &&
+          left.orchestrationId === right.orchestrationId))
+  );
 }
 
 function clampScroll(offset: number, lineCount: number, viewport: number): number {

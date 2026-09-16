@@ -16,6 +16,8 @@ import {
   type ResultField,
   type SessionHeaderField,
 } from "../config/inbox-display-config.ts";
+import type { InboxFocus } from "./inbox-focus.ts";
+import { itemForFocus } from "./inbox-focus.ts";
 
 const h = React.createElement;
 
@@ -54,6 +56,8 @@ export interface InboxViewProps {
   status?: StatusMessage | null;
   search?: InboxSearchView;
   displayConfig?: InboxDisplayConfig;
+  focus?: InboxFocus | null;
+  collapsedOrchestrations?: ReadonlySet<string>;
   onOpen: () => void;
   onCopy: () => void;
   onArchive: () => void;
@@ -154,43 +158,70 @@ export const InboxView: FC<InboxViewProps> = ({
   status = null,
   search,
   displayConfig = DEFAULT_INBOX_DISPLAY_CONFIG,
+  focus,
+  collapsedOrchestrations = new Set<string>(),
 }) => {
   const contentWidth = contentWidthFor(width);
   const displayRows = groupingRows ?? buildInboxGrouping(items);
+  const effectiveFocus: InboxFocus | null =
+    focus === undefined
+      ? items[cursor] === undefined
+        ? null
+        : { kind: "result", resultId: items[cursor].id }
+      : focus;
   const rowOffset = Number.isFinite(offset) ? Math.max(0, Math.floor(offset)) : 0;
   const rowLimit =
     limit === undefined ? undefined : Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : 0;
-  const itemIndicesById = new Map(items.map((item, index) => [item.id, index]));
   let currentOrchestrationRole: OrchestrationHeader["orchestrationRole"] = null;
+  let currentOrchestrationId: string | null = null;
   const annotatedRows = displayRows.map((row, displayIndex) => {
     if (row.kind === "orchestration") {
       currentOrchestrationRole = row.orchestrationRole;
+      currentOrchestrationId = row.orchestrationId;
     }
-    const resultIndex = row.kind === "result" ? (itemIndicesById.get(row.item.id) ?? null) : null;
-    return { row, displayIndex, resultIndex, currentOrchestrationRole };
+    return { row, displayIndex, currentOrchestrationRole, currentOrchestrationId };
   });
   const visibleRows =
     rowLimit === undefined
       ? annotatedRows.slice(rowOffset)
       : annotatedRows.slice(rowOffset, rowOffset + rowLimit);
   const renderedRows = visibleRows.map(
-    ({ row, displayIndex, resultIndex, currentOrchestrationRole }) => {
+    ({ row, displayIndex, currentOrchestrationRole, currentOrchestrationId }) => {
       if (row.kind === "orchestration") {
         return h(
           Text,
           {
             key: `orchestration-${row.orchestrationId}-${displayIndex}`,
             dimColor: true,
+            inverse:
+              effectiveFocus?.kind === "orchestration" &&
+              row.orchestrationId === effectiveFocus.orchestrationId,
             wrap: "truncate",
           },
-          formatOrchestrationHeader(row, contentWidth, displayConfig),
+          formatOrchestrationHeader(
+            row,
+            contentWidth,
+            displayConfig,
+            collapsedOrchestrations.has(row.orchestrationId),
+          ),
         );
       }
       if (row.kind === "agent-session") {
         const firstChild = displayRows[displayIndex + 1];
+        const sessionItem = items.find(
+          (item) =>
+            item.orchestrationId === currentOrchestrationId &&
+            item.agentSessionKind === row.agentSessionKind &&
+            item.agentSessionValue === row.agentSessionValue,
+        );
         const agentLabel =
-          firstChild?.kind === "result" ? firstChild.item.agentLabel : "unknown agent";
-        const role = sessionRole(displayRows, displayIndex, currentOrchestrationRole);
+          sessionItem?.agentLabel ??
+          (firstChild?.kind === "result" ? firstChild.item.agentLabel : "unknown agent");
+        const role = sessionRole(
+          displayRows,
+          displayIndex,
+          sessionItem?.orchestrationRole ?? currentOrchestrationRole,
+        );
         return h(
           Text,
           { key: `agent-session-${displayIndex}`, dimColor: true, wrap: "truncate" },
@@ -204,12 +235,20 @@ export const InboxView: FC<InboxViewProps> = ({
           : formatGroupedInboxRow(row.item, contentWidth, Date.now(), displayConfig);
       return h(
         Text,
-        { key: `result-${row.item.id}`, inverse: resultIndex === cursor, wrap: "truncate" },
+        {
+          key: `result-${row.item.id}`,
+          inverse: effectiveFocus?.kind === "result" && row.item.id === effectiveFocus.resultId,
+          wrap: "truncate",
+        },
         rowText,
       );
     },
   );
-  const metadataLines = selectedMetadataLines(items[cursor], contentWidth, displayConfig);
+  const metadataLines = selectedMetadataLines(
+    itemForFocus(items, effectiveFocus),
+    contentWidth,
+    displayConfig,
+  );
   const metadata =
     metadataLines.length === 0
       ? null
@@ -285,8 +324,8 @@ function inboxFooter(mode: InboxMode, search: InboxSearchView | undefined): stri
   }
 
   return mode === "archived"
-    ? "↑/↓ or k/j move · PageUp/PageDown page · Enter open · y copy · r restore · Tab active · q/Esc quit"
-    : "↑/↓ or k/j move · PageUp/PageDown page · Enter open · y copy · a archive · Tab archived · q/Esc quit";
+    ? "↑/↓ or k/j move · PageUp/PageDown page · Space toggle group · <- collapse · -> expand · Enter open · y copy · r restore · Tab active · q/Esc quit"
+    : "↑/↓ or k/j move · PageUp/PageDown page · Space toggle group · <- collapse · -> expand · Enter open · y copy · a archive · Tab archived · q/Esc quit";
 }
 
 function searchScopeLabel(scope: InboxScope): string {
@@ -321,12 +360,13 @@ export function formatOrchestrationHeader(
   header: OrchestrationHeader,
   width: number,
   displayConfig: InboxDisplayConfig = DEFAULT_INBOX_DISPLAY_CONFIG,
+  collapsed = false,
 ): string {
   const fields = displayConfig.orchestrationHeaderFields
     .map((field) => orchestrationHeaderFieldValue(header, field))
     .filter((value): value is string => value !== null);
   const body = fields.length === 0 ? "" : ` ${fields.join(" · ")}`;
-  return truncateDisplay(`◆${body}`, normalizedWidth(width));
+  return truncateDisplay(`${collapsed ? "▸" : "▾"}${body}`, normalizedWidth(width));
 }
 
 export function formatAgentSessionHeader(

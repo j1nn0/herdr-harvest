@@ -274,6 +274,15 @@ Detailed layout:
 }
 ```
 
+#### Collapsing orchestration groups
+
+Focus an orchestration header and press Space to toggle its Result rows. Left
+collapses an expanded group and Right expands a collapsed group. Session
+headers remain visible but are never selectable. While an applied search is
+active, groups are shown expanded temporarily; clearing the search restores
+the previous collapse state. Collapse state is in memory only and resets when
+Harvest exits.
+
 ## Architecture
 
 The capture pipeline is a straight line, and each stage is replaceable in isolation:

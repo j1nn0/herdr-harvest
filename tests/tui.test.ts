@@ -514,9 +514,11 @@ describe("inbox TUI", () => {
     }
 
     const header = formatOrchestrationHeader(orchestration, 80);
+    const collapsedHeader = formatOrchestrationHeader(orchestration, 80, undefined, true);
     const sessionHeader = formatAgentSessionHeader(session, item.agentLabel, "explorer", 80);
     const resultRow = formatGroupedInboxRow(item, 80, 60_000);
-    assert.match(header, /◆ 日本語の長い orchestration label 🚀/);
+    assert.match(header, /▾ 日本語の長い orchestration label 🚀/);
+    assert.match(collapsedHeader, /▸ 日本語の長い orchestration label 🚀/);
     assert.doesNotMatch(header, /2f6a3c1e|1 result/);
     assert.match(sessionHeader, / {2}explorer · 探索エージェント🚀 · short-session/);
     assert.doesNotMatch(sessionHeader, /1 result/);
@@ -524,6 +526,7 @@ describe("inbox TUI", () => {
     assert.match(resultRow, /日本語の長い orchestration label/);
     assert.doesNotMatch(resultRow, /workspace|preview text/);
     assert.ok(displayWidth(formatOrchestrationHeader(orchestration, 12)) <= 12);
+    assert.ok(displayWidth(formatOrchestrationHeader(orchestration, 12, undefined, true)) <= 12);
     assert.ok(
       displayWidth(formatAgentSessionHeader(session, item.agentLabel, "explorer", 12)) <= 12,
     );
@@ -657,11 +660,260 @@ describe("inbox TUI", () => {
     const instance = render(h(createApp(fixture.port, LEGACY_DISPLAY_CONFIG)));
     try {
       const frame = instance.lastFrame() ?? "";
-      assert.match(frame, /◆ Explore parser · 2f6a3c1e · 3 results/);
+      assert.match(frame, /▾ Explore parser · 2f6a3c1e · 3 results/);
       assert.match(frame, /explorer\/fixer · explorer-agent · explorer-short · 2 results/);
       assert.match(frame, /fixer · fixer-agent · fixer-short · 1 result/);
       assert.match(frame, / {4}●/);
       assert.match(frame, /agent-standalone/);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("collapses orchestration rows while keeping header focus and result actions id-based", async () => {
+    const items = [
+      makeItem("collapse-a-one", true, {
+        agentSessionKind: "id",
+        agentSessionValue: "session-a",
+        orchestrationId: ORCHESTRATION_A,
+        orchestrationLabel: "Task A",
+      }),
+      makeItem("collapse-standalone", true),
+      makeItem("collapse-a-two", false, {
+        agentSessionKind: "path",
+        agentSessionValue: "/tmp/collapse-a-two.jsonl",
+        orchestrationId: ORCHESTRATION_A,
+        orchestrationLabel: "Task A",
+      }),
+      makeItem("collapse-b-one", true, {
+        agentSessionKind: "id",
+        agentSessionValue: "session-b",
+        orchestrationId: ORCHESTRATION_B,
+        orchestrationLabel: "Task B",
+      }),
+    ];
+    const fixture = makeFixture(items);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      let frame = instance.lastFrame() ?? "";
+      assert.match(frame, /▾ Task A/);
+      assert.match(frame, /pane-collapse-a-one/);
+      assert.match(frame, /pane-collapse-a-two/);
+
+      // A1 -> Group A. Header actions never target the first Result.
+      await sendInput(instance, "k");
+      await sendInput(instance, "\r");
+      await sendInput(instance, "y");
+      await sendInput(instance, "a");
+      await sendInput(instance, "r");
+      assert.deepEqual(fixture.calls.opened, []);
+      assert.deepEqual(fixture.calls.copied, []);
+      assert.deepEqual(fixture.calls.archived, []);
+      assert.deepEqual(fixture.calls.restored, []);
+
+      await sendInput(instance, " ");
+      frame = instance.lastFrame() ?? "";
+      assert.match(frame, /▸ Task A/);
+      assert.doesNotMatch(frame, /pane-collapse-a-one|pane-collapse-a-two/);
+      assert.match(frame, /sess-collapse-a-one/);
+      assert.match(frame, /sess-collapse-a-two/);
+      assert.match(frame, /agent-collapse-standalone|▾ Task B|agent-collapse-b-one/);
+
+      // Focus remains on the header, so Right expands and Left collapses it.
+      await sendInput(instance, "\u001b[C");
+      assert.match(instance.lastFrame() ?? "", /▾ Task A/);
+      await sendInput(instance, "\u001b[C");
+      assert.match(instance.lastFrame() ?? "", /▾ Task A/);
+      await sendInput(instance, "\u001b[D");
+      assert.match(instance.lastFrame() ?? "", /▸ Task A/);
+      await sendInput(instance, "\u001b[D");
+      assert.match(instance.lastFrame() ?? "", /▸ Task A/);
+      await sendInput(instance, " ");
+      assert.match(instance.lastFrame() ?? "", /▾ Task A/);
+
+      // Moving from the header selects its first Result, and actions use its id.
+      await sendInput(instance, "j");
+      await sendInput(instance, "y");
+      assert.deepEqual(fixture.calls.copied, ["collapse-a-one"]);
+      await sendInput(instance, "\r");
+      assert.deepEqual(fixture.calls.opened, ["collapse-a-one"]);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("moves through visible orchestration headers and results in both directions", async () => {
+    const items = [
+      makeItem("focus-a-one", true, {
+        agentSessionKind: "id",
+        agentSessionValue: "explorer-session",
+        orchestrationId: ORCHESTRATION_A,
+        orchestrationLabel: "Task A",
+        orchestrationRole: "explorer",
+      }),
+      makeItem("focus-a-two", false, {
+        agentSessionKind: "path",
+        agentSessionValue: "/tmp/fixer.jsonl",
+        orchestrationId: ORCHESTRATION_A,
+        orchestrationLabel: "Task A",
+        orchestrationRole: "fixer",
+      }),
+      makeItem("focus-b-one", true, {
+        agentSessionKind: "id",
+        agentSessionValue: "other-session",
+        orchestrationId: ORCHESTRATION_B,
+        orchestrationLabel: "Task B",
+      }),
+      makeItem("focus-standalone", true),
+    ];
+    const fixture = makeFixture(items);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      const opened: string[] = [];
+      const openCurrent = async (): Promise<void> => {
+        const before = fixture.calls.opened.length;
+        await sendInput(instance, "\r");
+        if (fixture.calls.opened.length > before) {
+          opened.push(fixture.calls.opened.at(-1) ?? "");
+        }
+        await sendInput(instance, "\u001b");
+      };
+
+      // Starting at A1, Down reaches A2, Group B, B1, then standalone.
+      await sendInput(instance, "j");
+      await openCurrent();
+      await sendInput(instance, "j");
+      await sendInput(instance, "j");
+      await openCurrent();
+      await sendInput(instance, "j");
+      await openCurrent();
+      assert.deepEqual(opened, ["focus-a-two", "focus-b-one", "focus-standalone"]);
+
+      // Up reverses the same focusable sequence; session headers never stop it.
+      await sendInput(instance, "k");
+      await openCurrent();
+      await sendInput(instance, "k");
+      await sendInput(instance, "k");
+      await openCurrent();
+      await sendInput(instance, "k");
+      await openCurrent();
+      assert.deepEqual(opened.slice(-3), ["focus-b-one", "focus-a-two", "focus-a-one"]);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("expands collapsed groups during search and restores collapse after clearing", async () => {
+    const fixture = makeFixture([
+      makeItem("search-collapse-a", true, {
+        agentSessionKind: "id",
+        agentSessionValue: "search-session",
+        orchestrationId: ORCHESTRATION_A,
+        orchestrationLabel: "Search task",
+      }),
+      makeItem("search-collapse-standalone", true),
+    ]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      await sendInput(instance, "k");
+      await sendInput(instance, " ");
+      assert.doesNotMatch(instance.lastFrame() ?? "", /pane-search-collapse-a/);
+      assert.match(instance.lastFrame() ?? "", /sess-search-collapse-a/);
+
+      await sendInput(instance, "/");
+      await sendInput(instance, "Search");
+      await sendInput(instance, " ");
+      await sendInput(instance, "task");
+      await sendInput(instance, "\r");
+      let frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Search: +Search task/);
+      assert.match(frame, /pane-search-collapse-a/);
+
+      // Applied search makes the group visible but does not forget collapse.
+      await sendInput(instance, "k");
+      await sendInput(instance, " ");
+      assert.match(instance.lastFrame() ?? "", /pane-search-collapse-a/);
+      await sendInput(instance, "\u001b");
+      frame = instance.lastFrame() ?? "";
+      assert.doesNotMatch(frame, /pane-search-collapse-a/);
+      assert.match(frame, /▸ Search task/);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("pages and wheels over collapsed groups without invisible stops", async () => {
+    const items = [
+      ...Array.from({ length: 5 }, (_, index) =>
+        makeItem(`paged-a-${index}`, true, {
+          agentSessionKind: "id",
+          agentSessionValue: "paged-session",
+          orchestrationId: ORCHESTRATION_A,
+          orchestrationLabel: "Paged A",
+        }),
+      ),
+      makeItem("paged-b-one", true, {
+        agentSessionKind: "id",
+        agentSessionValue: "paged-b-session",
+        orchestrationId: ORCHESTRATION_B,
+        orchestrationLabel: "Paged B",
+      }),
+      makeItem("paged-standalone", true),
+    ];
+    const fixture = makeFixture(items);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      await sendInput(instance, "k");
+      await sendInput(instance, " ");
+
+      // A header, Group B, B1, and the standalone are the only focus steps.
+      await sendInput(instance, "\u001b[<65;1;1M");
+      await sendInput(instance, "\r");
+      assert.deepEqual(fixture.calls.opened, ["paged-standalone"]);
+      await sendInput(instance, "\u001b");
+
+      await sendInput(instance, "\u001b[5~");
+      await sendInput(instance, "\r");
+      assert.deepEqual(fixture.calls.opened, ["paged-standalone"]);
+      assert.match(instance.lastFrame() ?? "", /▸ Paged A/);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("keeps collapse behavior independent from custom display fields and collections", async () => {
+    const customConfig: InboxDisplayConfig = {
+      ...DEFAULT_INBOX_DISPLAY_CONFIG,
+      orchestrationHeaderFields: ["label"],
+      sessionHeaderFields: ["session"],
+      standaloneFields: ["agent"],
+      groupedFields: ["context"],
+    };
+    const fixture = makeFixture([
+      makeItem("custom-active", true, {
+        orchestrationId: ORCHESTRATION_A,
+        orchestrationLabel: "Custom task",
+      }),
+      {
+        ...makeArchivedItem("custom-archived", true),
+        orchestrationId: ORCHESTRATION_A,
+        orchestrationLabel: "Custom task",
+      },
+    ]);
+    const instance = render(h(createApp(fixture.port, customConfig)));
+    try {
+      await sendInput(instance, "k");
+      await sendInput(instance, " ");
+      let frame = instance.lastFrame() ?? "";
+      assert.match(frame, /▸ Custom task/);
+      assert.doesNotMatch(frame, /pane-custom-active/);
+
+      await sendInput(instance, "\t");
+      frame = instance.lastFrame() ?? "";
+      assert.match(frame, /▸ Custom task/);
+      assert.doesNotMatch(frame, /pane-custom-archived/);
+      await sendInput(instance, "\t");
+      assert.match(instance.lastFrame() ?? "", /▸ Custom task/);
     } finally {
       instance.unmount();
     }
@@ -1632,24 +1884,24 @@ describe("inbox collections", () => {
     const fixture = makeFixture([item]);
     const instance = render(h(createApp(fixture.port, LEGACY_DISPLAY_CONFIG)));
     try {
-      assert.match(instance.lastFrame() ?? "", /◆ Lifecycle task · 2f6a3c1e · 1 result/);
+      assert.match(instance.lastFrame() ?? "", /▾ Lifecycle task · 2f6a3c1e · 1 result/);
 
       await sendInput(instance, "a");
       let frame = instance.lastFrame() ?? "";
-      assert.doesNotMatch(frame, /◆ Lifecycle task/);
+      assert.doesNotMatch(frame, /▾ Lifecycle task|▸ Lifecycle task/);
       assert.match(frame, /No results yet/);
 
       await sendInput(instance, "\t");
       frame = instance.lastFrame() ?? "";
-      assert.match(frame, /◆ Lifecycle task · 2f6a3c1e · 1 result/);
+      assert.match(frame, /▾ Lifecycle task · 2f6a3c1e · 1 result/);
 
       await sendInput(instance, "r");
       frame = instance.lastFrame() ?? "";
-      assert.doesNotMatch(frame, /◆ Lifecycle task/);
+      assert.doesNotMatch(frame, /▾ Lifecycle task|▸ Lifecycle task/);
       assert.match(frame, /No archived results/);
 
       await sendInput(instance, "\t");
-      assert.match(instance.lastFrame() ?? "", /◆ Lifecycle task · 2f6a3c1e · 1 result/);
+      assert.match(instance.lastFrame() ?? "", /▾ Lifecycle task · 2f6a3c1e · 1 result/);
     } finally {
       instance.unmount();
     }
@@ -1901,7 +2153,7 @@ describe("inbox search", () => {
 
       const frame = instance.lastFrame() ?? "";
       assert.match(frame, /Harvest Result Search · Active · 1 match/);
-      assert.match(frame, /◆ Beta task · 8a2c7e10 · 1 result/);
+      assert.match(frame, /▾ Beta task · 8a2c7e10 · 1 result/);
       assert.doesNotMatch(frame, /Alpha task/);
       assert.match(frame, /agent-beta-claim/);
 
