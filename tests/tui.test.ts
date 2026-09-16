@@ -13,6 +13,10 @@ import type {
 import { createInboxService } from "../src/app/inbox-service.ts";
 import type { CopyReport } from "../src/clipboard/provider.ts";
 import { ClipboardError } from "../src/clipboard/provider.ts";
+import {
+  DEFAULT_INBOX_DISPLAY_CONFIG,
+  type InboxDisplayConfig,
+} from "../src/config/inbox-display-config.ts";
 import type { CaptureInput, HarvestResult } from "../src/domain/result.ts";
 import { openDatabase } from "../src/persistence/database.ts";
 import { SqliteResultStore } from "../src/persistence/result-store.ts";
@@ -33,6 +37,19 @@ import { resultViewportLines } from "../src/tui/result-view.ts";
 const h = React.createElement;
 const ORCHESTRATION_A = "2f6a3c1e-8b1d-4a30-9a4f-5b1c2d3e4f50";
 const ORCHESTRATION_B = "8a2c7e10-4d6f-4b91-9c20-1234567890ab";
+const DETAILED_DISPLAY_CONFIG: InboxDisplayConfig = {
+  ...DEFAULT_INBOX_DISPLAY_CONFIG,
+  standaloneFields: ["unread", "agent", "session", "context", "age", "workspace", "preview"],
+  groupedFields: ["unread", "context", "age", "workspace", "preview"],
+  metadataFields: ["herdrSession", "pane", "context", "agent", "session", "workspace", "preview"],
+};
+const LEGACY_DISPLAY_CONFIG: InboxDisplayConfig = {
+  orchestrationHeaderFields: ["label", "id", "count"],
+  sessionHeaderFields: ["role", "agent", "session", "count"],
+  standaloneFields: ["unread", "agent", "session", "context", "age", "workspace", "preview"],
+  groupedFields: ["unread", "context", "age", "workspace", "preview"],
+  metadataFields: ["herdrSession", "pane"],
+};
 
 interface FixtureOptions {
   copy?: (id: string) => Promise<CopyReport>;
@@ -250,7 +267,7 @@ function resultBodyRows(frame: string): string[] {
 }
 
 describe("inbox TUI", () => {
-  test("surfaces captured pane context before the preview", () => {
+  test("surfaces captured pane context in the default standalone row", () => {
     const item = makeItem("wide");
     const row = formatInboxRow(
       {
@@ -268,10 +285,9 @@ describe("inbox TUI", () => {
 
     assert.match(row, /claude/);
     assert.match(row, /409d97/);
-    assert.match(row, /herdr-plugin-sdk/);
     assert.match(row, /ago 1m/);
     assert.match(row, /Claude parser task/);
-    assert.ok(row.indexOf("Claude parser task") < row.indexOf("completed output preview"));
+    assert.doesNotMatch(row, /herdr-plugin-sdk|completed output preview/);
     assert.ok(displayWidth(row) <= 120);
   });
 
@@ -285,7 +301,7 @@ describe("inbox TUI", () => {
         preview: "footer preview",
       }),
     ]);
-    const instance = render(h(createApp(fixture.port)));
+    const instance = render(h(createApp(fixture.port, DETAILED_DISPLAY_CONFIG)));
     try {
       const frame = instance.lastFrame() ?? "";
       assert.match(frame, /Parser task/);
@@ -336,11 +352,36 @@ describe("inbox TUI", () => {
       },
       120,
       60_000,
+      { ...DEFAULT_INBOX_DISPLAY_CONFIG, standaloneFields: ["context", "preview"] },
     );
 
     assert.match(row, /footer-only preview/);
     assert.doesNotMatch(row, /undefined|null/);
     assert.doesNotMatch(row, / · {2}/);
+  });
+
+  test("honors configured field order and visibility independently for row kinds", () => {
+    const item = makeItem("configured", true, {
+      orchestrationId: ORCHESTRATION_A,
+      orchestrationLabel: "Task context",
+      paneLabel: "Pane context",
+      preview: "footer preview",
+    });
+    const config: InboxDisplayConfig = {
+      ...DEFAULT_INBOX_DISPLAY_CONFIG,
+      standaloneFields: ["preview", "context", "agent"],
+      groupedFields: ["age", "context"],
+    };
+
+    const standalone = formatInboxRow({ ...item, orchestrationId: null }, 100, 60_000, config);
+    const grouped = formatGroupedInboxRow(item, 100, 60_000, config);
+    assert.ok(standalone.indexOf("footer preview") < standalone.indexOf("Task context"));
+    assert.ok(standalone.indexOf("Task context") < standalone.indexOf("agent-configured"));
+    assert.doesNotMatch(standalone, /sess-configured/);
+    assert.match(grouped, /ago 1m.*Task context/);
+    assert.doesNotMatch(grouped, /footer preview|agent-configured/);
+    assert.ok(displayWidth(standalone) <= 100);
+    assert.ok(displayWidth(grouped) <= 100);
   });
 
   test("keeps the core identity fields at a narrow width", () => {
@@ -412,6 +453,7 @@ describe("inbox TUI", () => {
         paneLabel: "a very long transient pane title",
       },
       28,
+      LEGACY_DISPLAY_CONFIG,
     );
 
     assert.equal(lines.length, 2);
@@ -423,8 +465,14 @@ describe("inbox TUI", () => {
     const fallbackLines = selectedMetadataLines(
       { ...item, paneLabel: "  ", orchestrationLabel: "Claimed parser task" },
       28,
+      {
+        ...LEGACY_DISPLAY_CONFIG,
+        standaloneFields: ["agent"],
+        metadataFields: ["herdrSession", "context"],
+      },
     );
     assert.match(fallbackLines[1] ?? "", /Context: Claimed parser task/);
+    assert.deepEqual(selectedMetadataLines(item, 80), []);
   });
 
   test("calculates inbox capacity and keeps list offsets valid", () => {
@@ -468,14 +516,59 @@ describe("inbox TUI", () => {
     const header = formatOrchestrationHeader(orchestration, 80);
     const sessionHeader = formatAgentSessionHeader(session, item.agentLabel, "explorer", 80);
     const resultRow = formatGroupedInboxRow(item, 80, 60_000);
-    assert.match(header, /◆ 日本語の長い orchestration label 🚀 · 2f6a3c1e · 1 result/);
-    assert.match(sessionHeader, / {2}explorer · 探索エージェント🚀 · short-session · 1 result/);
+    assert.match(header, /◆ 日本語の長い orchestration label 🚀/);
+    assert.doesNotMatch(header, /2f6a3c1e|1 result/);
+    assert.match(sessionHeader, / {2}explorer · 探索エージェント🚀 · short-session/);
+    assert.doesNotMatch(sessionHeader, /1 result/);
     assert.match(resultRow, /^ {4}● /);
+    assert.match(resultRow, /日本語の長い orchestration label/);
+    assert.doesNotMatch(resultRow, /workspace|preview text/);
     assert.ok(displayWidth(formatOrchestrationHeader(orchestration, 12)) <= 12);
     assert.ok(
       displayWidth(formatAgentSessionHeader(session, item.agentLabel, "explorer", 12)) <= 12,
     );
     assert.ok(displayWidth(formatGroupedInboxRow(item, 12, 60_000)) <= 12);
+  });
+
+  test("honors configured header order and adapts metadata height", () => {
+    const item = makeItem("metadata-order", true, {
+      orchestrationId: ORCHESTRATION_A,
+      orchestrationLabel: "Task",
+    });
+    const rows = buildInboxGrouping([item]);
+    const orchestration = rows[0];
+    const session = rows[1];
+    if (orchestration?.kind !== "orchestration" || session?.kind !== "agent-session") {
+      throw new Error("Expected orchestration and session headers.");
+    }
+    const config: InboxDisplayConfig = {
+      ...DEFAULT_INBOX_DISPLAY_CONFIG,
+      orchestrationHeaderFields: ["count", "label"],
+      sessionHeaderFields: ["count", "session"],
+      metadataFields: ["pane", "herdrSession"],
+    };
+
+    const header = formatOrchestrationHeader(orchestration, 80, config);
+    const sessionHeader = formatAgentSessionHeader(
+      session,
+      item.agentLabel,
+      "explorer",
+      80,
+      config,
+    );
+    const lines = selectedMetadataLines(item, 80, config);
+    assert.ok(header.indexOf("1 result") < header.indexOf("Task"));
+    assert.ok(sessionHeader.indexOf("1 result") < sessionHeader.indexOf("sess-metadata-order"));
+    assert.match(lines[0] ?? "", /Pane:/);
+    assert.match(lines[1] ?? "", /Herdr:/);
+    assert.equal(inboxViewportLines(10, lines.length, false), 5);
+    assert.deepEqual(selectedMetadataLines(item, 80), []);
+
+    const duplicateContext = selectedMetadataLines(item, 80, {
+      ...config,
+      metadataFields: ["context", "pane"],
+    });
+    assert.deepEqual(duplicateContext, ["Pane: pane-metadata-order"]);
   });
 
   test("keeps display metadata on one physical line", () => {
@@ -508,7 +601,12 @@ describe("inbox TUI", () => {
       formatInboxRow({ ...item, orchestrationId: null }, 80, 60_000),
       /[\r\n\u2028\u2029]/,
     );
-    assert.ok(selectedMetadataLines(item, 80).every((line) => !/[\r\n\u2028\u2029]/.test(line)));
+    assert.ok(displayWidth(formatInboxRow(item, 80, 60_000)) <= 80);
+    assert.ok(
+      selectedMetadataLines(item, 80, DETAILED_DISPLAY_CONFIG).every(
+        (line) => !/[\r\n\u2028\u2029]/.test(line),
+      ),
+    );
   });
 
   test("renders one row per result with an unread indicator", () => {
@@ -556,7 +654,7 @@ describe("inbox TUI", () => {
       makeItem("standalone", true),
     ];
     const fixture = makeFixture(items);
-    const instance = render(h(createApp(fixture.port)));
+    const instance = render(h(createApp(fixture.port, LEGACY_DISPLAY_CONFIG)));
     try {
       const frame = instance.lastFrame() ?? "";
       assert.match(frame, /◆ Explore parser · 2f6a3c1e · 3 results/);
@@ -749,7 +847,7 @@ describe("inbox TUI", () => {
       }),
     ];
     const fixture = makeFixture(items);
-    const instance = render(h(createApp(fixture.port)));
+    const instance = render(h(createApp(fixture.port, LEGACY_DISPLAY_CONFIG)));
     try {
       setTerminalSize(instance, 80, 8);
       await sendInput(instance, "j");
@@ -854,7 +952,7 @@ describe("inbox TUI", () => {
       makeItem(`inbox-${String(index).padStart(2, "0")}`),
     );
     const fixture = makeFixture(items);
-    const instance = render(h(createApp(fixture.port)));
+    const instance = render(h(createApp(fixture.port, LEGACY_DISPLAY_CONFIG)));
     try {
       assert.equal(hasAgent(instance.lastFrame() ?? "", "inbox-00"), true);
       assert.equal(hasAgent(instance.lastFrame() ?? "", "inbox-19"), false);
@@ -908,7 +1006,7 @@ describe("inbox TUI", () => {
       makeItem(`narrow-${String(index).padStart(2, "0")}`),
     );
     const fixture = makeFixture(items);
-    const instance = render(h(createApp(fixture.port)));
+    const instance = render(h(createApp(fixture.port, LEGACY_DISPLAY_CONFIG)));
     try {
       setTerminalSize(instance, 80, 24);
       await sendInput(instance, "j");
@@ -1357,7 +1455,7 @@ describe("inbox collections", () => {
       makeArchivedItem(`arch-${String(index).padStart(2, "0")}`),
     );
     const fixture = makeFixture([...archived, makeItem("active-zero")]);
-    const instance = render(h(createApp(fixture.port)));
+    const instance = render(h(createApp(fixture.port, LEGACY_DISPLAY_CONFIG)));
     try {
       await sendInput(instance, "\t");
       let frame = instance.lastFrame() ?? "";
@@ -1532,7 +1630,7 @@ describe("inbox collections", () => {
       orchestrationRole: "fixer",
     });
     const fixture = makeFixture([item]);
-    const instance = render(h(createApp(fixture.port)));
+    const instance = render(h(createApp(fixture.port, LEGACY_DISPLAY_CONFIG)));
     try {
       assert.match(instance.lastFrame() ?? "", /◆ Lifecycle task · 2f6a3c1e · 1 result/);
 
@@ -1795,7 +1893,7 @@ describe("inbox search", () => {
         orchestrationRole: "fixer",
       }),
     ]);
-    const instance = render(h(createApp(fixture.port)));
+    const instance = render(h(createApp(fixture.port, LEGACY_DISPLAY_CONFIG)));
     try {
       await sendInput(instance, "/");
       await sendInput(instance, "beta task");
@@ -1819,7 +1917,7 @@ describe("inbox search", () => {
       makeItem(`needle-${String(index).padStart(2, "0")}`),
     );
     const fixture = makeFixture([...items, makeItem("other")]);
-    const instance = render(h(createApp(fixture.port)));
+    const instance = render(h(createApp(fixture.port, LEGACY_DISPLAY_CONFIG)));
     try {
       setTerminalSize(instance, 80, 10);
       await sendInput(instance, "/");
@@ -2117,7 +2215,7 @@ describe("inbox search", () => {
       makeItem(`search-${String(index).padStart(2, "0")}`),
     );
     const fixture = makeFixture(items);
-    const instance = render(h(createApp(fixture.port)));
+    const instance = render(h(createApp(fixture.port, LEGACY_DISPLAY_CONFIG)));
     try {
       setTerminalSize(instance, 40, 12);
       await sendInput(instance, "/");

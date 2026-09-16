@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, test } from "node:test";
 
 import { loadConfig } from "../src/config/config.ts";
+import { removeDirectory } from "./helpers/remove-directory.ts";
 
 describe("loadConfig", () => {
   test("uses the default capture settings", () => {
@@ -100,5 +103,22 @@ describe("loadConfig", () => {
 
   test("requires an explicit state directory", () => {
     assert.throws(() => loadConfig({}), /HARVEST_STATE_DIR.*HERDR_PLUGIN_STATE_DIR/);
+  });
+
+  test("does not read the separate inbox display config", () => {
+    const directory = mkdtempSync(join(tmpdir(), "harvest-capture-config-"));
+    try {
+      const displayPath = join(directory, "harvest.inbox.json");
+      writeFileSync(displayPath, "not JSON");
+      const loaded = loadConfig({
+        HARVEST_STATE_DIR: directory,
+        HARVEST_CONFIG_PATH: displayPath,
+      });
+
+      assert.equal(loaded.config.captureLines, 400);
+      assert.deepEqual(loaded.warnings, []);
+    } finally {
+      removeDirectory(directory);
+    }
   });
 });

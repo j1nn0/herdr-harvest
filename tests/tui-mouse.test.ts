@@ -4,6 +4,10 @@ import { render } from "ink-testing-library";
 import React from "react";
 import type { InboxDetail, InboxItem, InboxPort } from "../src/app/inbox-service.ts";
 import type { CopyReport } from "../src/clipboard/provider.ts";
+import {
+  DEFAULT_INBOX_DISPLAY_CONFIG,
+  type InboxDisplayConfig,
+} from "../src/config/inbox-display-config.ts";
 import { createApp } from "../src/tui/app.ts";
 import {
   disableWheelReporting,
@@ -19,6 +23,14 @@ const h = React.createElement;
 /** Complete reports as the terminal sends them (ESC still attached). */
 const WHEEL_DOWN = "\u001B[<65;1;1M";
 const WHEEL_UP = "\u001B[<64;1;1M";
+const LEGACY_DISPLAY_CONFIG: InboxDisplayConfig = {
+  ...DEFAULT_INBOX_DISPLAY_CONFIG,
+  orchestrationHeaderFields: ["label", "id", "count"],
+  sessionHeaderFields: ["role", "agent", "session", "count"],
+  standaloneFields: ["unread", "agent", "session", "context", "age", "workspace", "preview"],
+  groupedFields: ["unread", "context", "age", "workspace", "preview"],
+  metadataFields: ["herdrSession", "pane"],
+};
 
 const WHEEL_UP_BUTTONS = [64, 68, 72, 76, 80, 84, 88, 92];
 const WHEEL_DOWN_BUTTONS = [65, 69, 73, 77, 81, 85, 89, 93];
@@ -383,7 +395,7 @@ describe("wheel navigation in the TUI", () => {
   test("keeps j/k, arrows, and page keys unchanged after wheel reports", async () => {
     const items = makeItems(30);
     const fixture = makeFixture(items);
-    const instance = render(h(createApp(fixture.port)));
+    const instance = render(h(createApp(fixture.port, LEGACY_DISPLAY_CONFIG)));
     try {
       await sendInput(instance, WHEEL_DOWN);
       await sendInput(instance, "j");
@@ -752,7 +764,7 @@ describe("wheel navigation in the Archived collection", () => {
       makeArchivedItem(`arch-${String(index).padStart(2, "0")}`),
     );
     const fixture = makeFixture([...archived, makeItem("active-zero")]);
-    const instance = render(h(createApp(fixture.port)));
+    const instance = render(h(createApp(fixture.port, LEGACY_DISPLAY_CONFIG)));
     try {
       setTerminalSize(instance, 80, 10);
       await sendInput(instance, "\t");

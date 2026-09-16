@@ -235,6 +235,45 @@ An invalid value falls back to the default *and* reports a warning on stderr rat
 
 `HARVEST_CAPTURE_LINES` is a requested row limit, not a guarantee of rows returned. Verified Herdr releases currently clamp read requests above 1000 logical rows server-side; this is an observed upstream implementation constraint, not a documented Herdr protocol limit, so Harvest passes requests through without normalizing them to 1000.
 
+#### Inbox display configuration
+
+The Inbox optionally reads JSON from `$HERDR_PLUGIN_CONFIG_DIR/harvest.inbox.json`. Set `HARVEST_CONFIG_PATH` to use a different file. A missing file uses the defaults silently; invalid JSON, shape, or field lists report a concise warning and use all defaults. The file is read when the Inbox starts, so restart Harvest after changing it.
+
+Each property is an ordered list: omitted fields are hidden and listed fields are shown in that order. Omitted properties use their defaults. Result fields are `unread`, `agent`, `session`, `context`, `age`, `workspace`, and `preview`; orchestration header fields are `label`, `id`, and `count`; session header fields are `role`, `agent`, `session`, and `count`; metadata fields are `context`, `agent`, `session`, `workspace`, `pane`, `herdrSession`, and `preview`. Result and header lists must contain at least one field; `metadataFields` may be empty.
+
+Default layout:
+
+```json
+{
+  "orchestrationHeaderFields": ["label"],
+  "sessionHeaderFields": ["role", "agent", "session"],
+  "standaloneFields": ["unread", "agent", "session", "context", "age"],
+  "groupedFields": ["unread", "context", "age"],
+  "metadataFields": []
+}
+```
+
+Minimal layout:
+
+```json
+{
+  "standaloneFields": ["agent", "context", "age"],
+  "groupedFields": ["context", "age"]
+}
+```
+
+Detailed layout:
+
+```json
+{
+  "orchestrationHeaderFields": ["label", "count"],
+  "sessionHeaderFields": ["role", "agent", "session", "count"],
+  "standaloneFields": ["unread", "agent", "session", "context", "age", "workspace", "preview"],
+  "groupedFields": ["unread", "context", "age", "workspace", "preview"],
+  "metadataFields": ["context", "agent", "session", "workspace", "pane", "herdrSession", "preview"]
+}
+```
+
 ## Architecture
 
 The capture pipeline is a straight line, and each stage is replaceable in isolation:

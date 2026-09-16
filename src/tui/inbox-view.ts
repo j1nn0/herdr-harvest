@@ -8,6 +8,14 @@ import {
   type OrchestrationHeader,
 } from "../app/inbox-groups.ts";
 import type { InboxItem, InboxMode, InboxScope } from "../app/inbox-service.ts";
+import {
+  DEFAULT_INBOX_DISPLAY_CONFIG,
+  type InboxDisplayConfig,
+  type MetadataField,
+  type OrchestrationHeaderField,
+  type ResultField,
+  type SessionHeaderField,
+} from "../config/inbox-display-config.ts";
 
 const h = React.createElement;
 
@@ -45,6 +53,7 @@ export interface InboxViewProps {
   limit?: number;
   status?: StatusMessage | null;
   search?: InboxSearchView;
+  displayConfig?: InboxDisplayConfig;
   onOpen: () => void;
   onCopy: () => void;
   onArchive: () => void;
@@ -144,6 +153,7 @@ export const InboxView: FC<InboxViewProps> = ({
   limit,
   status = null,
   search,
+  displayConfig = DEFAULT_INBOX_DISPLAY_CONFIG,
 }) => {
   const contentWidth = contentWidthFor(width);
   const displayRows = groupingRows ?? buildInboxGrouping(items);
@@ -173,7 +183,7 @@ export const InboxView: FC<InboxViewProps> = ({
             dimColor: true,
             wrap: "truncate",
           },
-          formatOrchestrationHeader(row, contentWidth),
+          formatOrchestrationHeader(row, contentWidth, displayConfig),
         );
       }
       if (row.kind === "agent-session") {
@@ -184,14 +194,14 @@ export const InboxView: FC<InboxViewProps> = ({
         return h(
           Text,
           { key: `agent-session-${displayIndex}`, dimColor: true, wrap: "truncate" },
-          formatAgentSessionHeader(row, agentLabel, role, contentWidth),
+          formatAgentSessionHeader(row, agentLabel, role, contentWidth, displayConfig),
         );
       }
 
       const rowText =
         row.item.orchestrationId === null
-          ? formatInboxRow(row.item, contentWidth)
-          : formatGroupedInboxRow(row.item, contentWidth);
+          ? formatInboxRow(row.item, contentWidth, Date.now(), displayConfig)
+          : formatGroupedInboxRow(row.item, contentWidth, Date.now(), displayConfig);
       return h(
         Text,
         { key: `result-${row.item.id}`, inverse: resultIndex === cursor, wrap: "truncate" },
@@ -199,7 +209,7 @@ export const InboxView: FC<InboxViewProps> = ({
       );
     },
   );
-  const metadataLines = selectedMetadataLines(items[cursor], contentWidth);
+  const metadataLines = selectedMetadataLines(items[cursor], contentWidth, displayConfig);
   const metadata =
     metadataLines.length === 0
       ? null
@@ -290,39 +300,33 @@ function searchScopeLabel(scope: InboxScope): string {
   }
 }
 
-export function formatInboxRow(item: InboxItem, width: number, nowMs = Date.now()): string {
+export function formatInboxRow(
+  item: InboxItem,
+  width: number,
+  nowMs = Date.now(),
+  displayConfig: InboxDisplayConfig = DEFAULT_INBOX_DISPLAY_CONFIG,
+): string {
   const limit = normalizedWidth(width);
   if (limit === 0) {
     return "";
   }
 
-  const age = formatTimestamp(item.capturedAtMs, nowMs);
-  const preview = item.preview || "(empty)";
-  const context = resultContextLabel(item);
-  const fields: RowField[] = [
-    { value: item.unread ? "●" : " ", minimumWidth: 1 },
-    {
-      value: item.agentLabel,
-      minimumWidth: Math.min(AGENT_MIN_DISPLAY_WIDTH, displayWidth(item.agentLabel)),
-    },
-    { value: item.sessionShortId, minimumWidth: displayWidth(item.sessionShortId) },
-    ...(context === null
-      ? []
-      : [{ value: context, minimumWidth: Math.min(4, displayWidth(context)) }]),
-    { value: item.workspaceLabel, minimumWidth: Math.min(2, displayWidth(item.workspaceLabel)) },
-    { value: age, minimumWidth: Math.min(5, displayWidth(age)) },
-    { value: preview, minimumWidth: Math.min(4, displayWidth(preview)) },
-  ];
+  const fields = resultFields(item, displayConfig.standaloneFields, nowMs);
 
   const { visibleFields, separator } = chooseVisibleFields(fields, limit);
   return fitFields(visibleFields, limit, separator);
 }
 
-export function formatOrchestrationHeader(header: OrchestrationHeader, width: number): string {
-  return truncateDisplay(
-    `◆ ${header.orchestrationLabel ?? "unknown orchestration"} · ${header.orchestrationId.slice(0, 8)} · ${resultCountLabel(header.count)}`,
-    normalizedWidth(width),
-  );
+export function formatOrchestrationHeader(
+  header: OrchestrationHeader,
+  width: number,
+  displayConfig: InboxDisplayConfig = DEFAULT_INBOX_DISPLAY_CONFIG,
+): string {
+  const fields = displayConfig.orchestrationHeaderFields
+    .map((field) => orchestrationHeaderFieldValue(header, field))
+    .filter((value): value is string => value !== null);
+  const body = fields.length === 0 ? "" : ` ${fields.join(" · ")}`;
+  return truncateDisplay(`◆${body}`, normalizedWidth(width));
 }
 
 export function formatAgentSessionHeader(
@@ -330,14 +334,21 @@ export function formatAgentSessionHeader(
   agentLabel: string,
   role: string | null,
   width: number,
+  displayConfig: InboxDisplayConfig = DEFAULT_INBOX_DISPLAY_CONFIG,
 ): string {
-  return truncateDisplay(
-    `  ${role ?? "unknown role"} · ${agentLabel || "unknown agent"} · ${header.sessionShortId} · ${resultCountLabel(header.count)}`,
-    normalizedWidth(width),
-  );
+  const fields = displayConfig.sessionHeaderFields
+    .map((field) => sessionHeaderFieldValue(header, agentLabel, role, field))
+    .filter((value): value is string => value !== null);
+  const body = fields.length === 0 ? "" : ` ${fields.join(" · ")}`;
+  return truncateDisplay(`  ${body}`, normalizedWidth(width));
 }
 
-export function formatGroupedInboxRow(item: InboxItem, width: number, nowMs = Date.now()): string {
+export function formatGroupedInboxRow(
+  item: InboxItem,
+  width: number,
+  nowMs = Date.now(),
+  displayConfig: InboxDisplayConfig = DEFAULT_INBOX_DISPLAY_CONFIG,
+): string {
   const limit = normalizedWidth(width);
   if (limit === 0) {
     return "";
@@ -345,18 +356,7 @@ export function formatGroupedInboxRow(item: InboxItem, width: number, nowMs = Da
 
   const indent = "    ";
   const availableWidth = Math.max(0, limit - displayWidth(indent));
-  const age = formatTimestamp(item.capturedAtMs, nowMs);
-  const preview = item.preview || "(empty)";
-  const context = resultContextLabel(item);
-  const fields: RowField[] = [
-    { value: item.unread ? "●" : " ", minimumWidth: 1 },
-    ...(context === null
-      ? []
-      : [{ value: context, minimumWidth: Math.min(4, displayWidth(context)) }]),
-    { value: age, minimumWidth: Math.min(5, displayWidth(age)) },
-    { value: item.workspaceLabel, minimumWidth: Math.min(2, displayWidth(item.workspaceLabel)) },
-    { value: preview, minimumWidth: Math.min(4, displayWidth(preview)) },
-  ];
+  const fields = resultFields(item, displayConfig.groupedFields, nowMs);
   const { visibleFields, separator } = chooseVisibleFields(fields, availableWidth);
   const row = `${indent}${fitFields(visibleFields, availableWidth, separator)}`;
   return displayWidth(row) <= limit ? row : truncateDisplay(row, limit);
@@ -405,22 +405,127 @@ export function displayWidth(text: string): number {
  * Format metadata for the currently selected inbox item. This is pure so
  * width-dependent behavior can be tested without relying on Ink's terminal.
  */
-export function selectedMetadataLines(item: InboxItem | undefined, width: number): string[] {
+export function selectedMetadataLines(
+  item: InboxItem | undefined,
+  width: number,
+  displayConfig: InboxDisplayConfig = DEFAULT_INBOX_DISPLAY_CONFIG,
+): string[] {
   const limit = normalizedWidth(width);
-  if (item === undefined || limit < METADATA_MIN_WIDTH) {
+  if (
+    item === undefined ||
+    limit < METADATA_MIN_WIDTH ||
+    displayConfig.metadataFields.length === 0
+  ) {
     return [];
   }
 
-  const paneLabel = meaningfulLabel(item.paneLabel);
-  const context = resultContextLabel(item);
-  const contextLine =
-    paneLabel === null && context !== null
-      ? `Context: ${context}`
-      : `Pane: ${paneLabel ?? "unknown pane"}`;
-  return [
-    truncateDisplay(`Herdr: ${item.herdrSessionLabel ?? "unknown session"}`, limit),
-    truncateDisplay(contextLine, limit),
-  ];
+  const rowFields =
+    item.orchestrationId === null ? displayConfig.standaloneFields : displayConfig.groupedFields;
+  return displayConfig.metadataFields
+    .filter((field) => field !== "context" || !rowFields.includes("context"))
+    .map((field) => metadataFieldValue(item, field))
+    .filter((value): value is string => value !== null)
+    .map((value) => truncateDisplay(value, limit));
+}
+
+function resultFields(item: InboxItem, fields: readonly ResultField[], nowMs: number): RowField[] {
+  return fields
+    .map((field) => {
+      const value = resultFieldValue(item, field, nowMs);
+      return value === null ? null : { value, minimumWidth: resultFieldMinimumWidth(field, value) };
+    })
+    .filter((field): field is RowField => field !== null);
+}
+
+function resultFieldValue(item: InboxItem, field: ResultField, nowMs: number): string | null {
+  switch (field) {
+    case "unread":
+      return item.unread ? "●" : " ";
+    case "agent":
+      return meaningfulLabel(item.agentLabel) ?? "unknown agent";
+    case "session":
+      return meaningfulLabel(item.sessionShortId) ?? "unknown session";
+    case "context":
+      return resultContextLabel(item);
+    case "age":
+      return formatTimestamp(item.capturedAtMs, nowMs);
+    case "workspace":
+      return meaningfulLabel(item.workspaceLabel) ?? "unknown workspace";
+    case "preview":
+      return item.preview || "(empty)";
+  }
+}
+
+function resultFieldMinimumWidth(field: ResultField, value: string): number {
+  switch (field) {
+    case "unread":
+      return 1;
+    case "agent":
+      return Math.min(AGENT_MIN_DISPLAY_WIDTH, displayWidth(value));
+    case "session":
+      return displayWidth(value);
+    case "context":
+      return Math.min(4, displayWidth(value));
+    case "age":
+      return Math.min(5, displayWidth(value));
+    case "workspace":
+      return Math.min(2, displayWidth(value));
+    case "preview":
+      return Math.min(4, displayWidth(value));
+  }
+}
+
+function orchestrationHeaderFieldValue(
+  header: OrchestrationHeader,
+  field: OrchestrationHeaderField,
+): string | null {
+  switch (field) {
+    case "label":
+      return meaningfulLabel(header.orchestrationLabel) ?? "unknown orchestration";
+    case "id":
+      return header.orchestrationId.slice(0, 8);
+    case "count":
+      return resultCountLabel(header.count);
+  }
+}
+
+function sessionHeaderFieldValue(
+  header: AgentSessionHeader,
+  agentLabel: string,
+  role: string | null,
+  field: SessionHeaderField,
+): string | null {
+  switch (field) {
+    case "role":
+      return meaningfulLabel(role) ?? "unknown role";
+    case "agent":
+      return meaningfulLabel(agentLabel) ?? "unknown agent";
+    case "session":
+      return meaningfulLabel(header.sessionShortId) ?? "unknown session";
+    case "count":
+      return resultCountLabel(header.count);
+  }
+}
+
+function metadataFieldValue(item: InboxItem, field: MetadataField): string | null {
+  switch (field) {
+    case "context": {
+      const context = resultContextLabel(item);
+      return context === null ? null : `Context: ${context}`;
+    }
+    case "agent":
+      return `Agent: ${meaningfulLabel(item.agentLabel) ?? "unknown agent"}`;
+    case "session":
+      return `Session: ${meaningfulLabel(item.sessionShortId) ?? "unknown session"}`;
+    case "workspace":
+      return `Workspace: ${meaningfulLabel(item.workspaceLabel) ?? "unknown workspace"}`;
+    case "pane":
+      return `Pane: ${meaningfulLabel(item.paneLabel) ?? "unknown pane"}`;
+    case "herdrSession":
+      return `Herdr: ${meaningfulLabel(item.herdrSessionLabel) ?? "unknown session"}`;
+    case "preview":
+      return `Preview: ${item.preview || "(empty)"}`;
+  }
 }
 
 function resultContextLabel(item: InboxItem): string | null {

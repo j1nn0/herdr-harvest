@@ -15,6 +15,8 @@ import type {
 import { isSearchQueryActive } from "../app/result-search.ts";
 import type { CopyReport } from "../clipboard/provider.ts";
 import { ClipboardError } from "../clipboard/provider.ts";
+import type { InboxDisplayConfig } from "../config/inbox-display-config.ts";
+import { DEFAULT_INBOX_DISPLAY_CONFIG } from "../config/inbox-display-config.ts";
 import {
   clampListOffset,
   displayRowIndexForCursor,
@@ -59,7 +61,10 @@ interface SearchState {
   editing: boolean;
 }
 
-export function createApp(port: InboxPort): FC {
+export function createApp(
+  port: InboxPort,
+  displayConfig: InboxDisplayConfig = DEFAULT_INBOX_DISPLAY_CONFIG,
+): FC {
   const HarvestApp: FC = () => {
     const { exit } = useApp();
     const { stdout } = useStdout();
@@ -78,7 +83,11 @@ export function createApp(port: InboxPort): FC {
     const inboxWidth =
       columns !== undefined && Number.isFinite(columns) ? Math.max(0, Math.floor(columns)) : 80;
     const inboxContentWidth = Math.max(0, inboxWidth - 2);
-    const inboxMetadataLines = selectedMetadataLines(items[cursor], inboxContentWidth).length;
+    const inboxMetadataLines = selectedMetadataLines(
+      items[cursor],
+      inboxContentWidth,
+      displayConfig,
+    ).length;
     const inboxCapacity = inboxViewportLines(stdout.rows, inboxMetadataLines, status !== null);
     const inboxPageStep = Math.max(1, inboxCapacity);
     const inboxRows = buildInboxGrouping(items);
@@ -272,7 +281,7 @@ export function createApp(port: InboxPort): FC {
       const nextRows = buildInboxGrouping(nextItems);
       const nextCapacity = inboxViewportLines(
         stdout.rows,
-        selectedMetadataLines(nextItems[nextCursor], inboxContentWidth).length,
+        selectedMetadataLines(nextItems[nextCursor], inboxContentWidth, displayConfig).length,
         hasStatus,
       );
       setItems(nextItems);
@@ -571,6 +580,7 @@ export function createApp(port: InboxPort): FC {
       mode,
       status,
       search: searchView,
+      displayConfig,
       offset: visibleListOffset,
       limit: inboxCapacity,
       onOpen: openSelected,

@@ -5,6 +5,7 @@ import React from "react";
 import { createInboxService } from "../app/inbox-service.ts";
 import { createClipboard } from "../clipboard/index.ts";
 import { loadConfig } from "../config/config.ts";
+import { loadInboxDisplayConfig } from "../config/inbox-display-config.ts";
 import { openDatabase } from "../persistence/database.ts";
 import { SqliteResultStore } from "../persistence/result-store.ts";
 import { createApp } from "../tui/app.ts";
@@ -24,6 +25,10 @@ export async function runInbox(env: NodeJS.ProcessEnv = process.env): Promise<nu
   for (const warning of loaded.warnings) {
     process.stderr.write(`${warning}\n`);
   }
+  const displayConfig = loadInboxDisplayConfig(env);
+  for (const warning of displayConfig.warnings) {
+    process.stderr.write(`${warning}\n`);
+  }
 
   const db = openDatabase(loaded.config.databasePath);
   let store: SqliteResultStore | null = null;
@@ -39,7 +44,7 @@ export async function runInbox(env: NodeJS.ProcessEnv = process.env): Promise<nu
     // renders, disabled in the single `finally` below so every exit path
     // (quit, unmount, render error) restores the terminal.
     enableWheelReporting(process.stdout);
-    const instance = render(h(createApp(port)));
+    const instance = render(h(createApp(port, displayConfig.config)));
     await instance.waitUntilExit();
     return 0;
   } finally {
