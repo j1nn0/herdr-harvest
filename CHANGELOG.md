@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-09-16
+
 ### Fixed
 
 - Fixed Result Inbox navigation so relative movement follows the visible grouped Result order.
@@ -77,7 +79,8 @@ First public release.
 - A completion inferred only from `blocked → idle` is not captured, because that transition can equally mean an approval prompt was cancelled.
 - Archived results stay in the database but cannot yet be browsed or restored from the inbox.
 
-[Unreleased]: https://github.com/j1nn0/herdr-harvest/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/j1nn0/herdr-harvest/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/j1nn0/herdr-harvest/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/j1nn0/herdr-harvest/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/j1nn0/herdr-harvest/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/j1nn0/herdr-harvest/compare/v0.2.0...v0.3.0
