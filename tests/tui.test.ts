@@ -250,7 +250,7 @@ function resultBodyRows(frame: string): string[] {
 }
 
 describe("inbox TUI", () => {
-  test("formats a distinguishable row without pane-title noise", () => {
+  test("surfaces captured pane context before the preview", () => {
     const item = makeItem("wide");
     const row = formatInboxRow(
       {
@@ -258,7 +258,7 @@ describe("inbox TUI", () => {
         agentLabel: "claude",
         sessionShortId: "409d97",
         workspaceLabel: "herdr-plugin-sdk",
-        paneLabel: "⠿ claude · working · 15m · transient title",
+        paneLabel: "Claude parser task",
         preview: "completed output preview",
         capturedAtMs: 0,
       },
@@ -270,8 +270,77 @@ describe("inbox TUI", () => {
     assert.match(row, /409d97/);
     assert.match(row, /herdr-plugin-sdk/);
     assert.match(row, /ago 1m/);
-    assert.doesNotMatch(row, /transient title/);
+    assert.match(row, /Claude parser task/);
+    assert.ok(row.indexOf("Claude parser task") < row.indexOf("completed output preview"));
     assert.ok(displayWidth(row) <= 120);
+  });
+
+  test("shows standalone result context without opening the result", () => {
+    const fixture = makeFixture([
+      makeItem("context-standalone", true, {
+        agentLabel: "agent",
+        sessionShortId: "session",
+        workspaceLabel: "workspace",
+        paneLabel: "Parser task",
+        preview: "footer preview",
+      }),
+    ]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      const frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Parser task/);
+      assert.match(frame, /footer preview/);
+      assert.ok(frame.indexOf("Parser task") < frame.indexOf("footer preview"));
+      assert.deepEqual(fixture.calls.opened, []);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("keeps capture context distinct for results in one native session", () => {
+    const first = makeItem("context-first", true, {
+      agentSessionKind: "id",
+      agentSessionValue: "shared-session",
+      orchestrationId: ORCHESTRATION_A,
+      orchestrationLabel: "Parser task",
+      orchestrationRole: "explorer",
+      paneLabel: "Parser tests",
+    });
+    const second = makeItem("context-second", false, {
+      agentSessionKind: "id",
+      agentSessionValue: "shared-session",
+      orchestrationId: ORCHESTRATION_A,
+      orchestrationLabel: "Parser task",
+      orchestrationRole: "explorer",
+      paneLabel: "Parser implementation",
+    });
+    const fixture = makeFixture([first, second]);
+    const instance = render(h(createApp(fixture.port)));
+    try {
+      const frame = instance.lastFrame() ?? "";
+      assert.match(frame, /Parser task · Parser tests/);
+      assert.match(frame, /Parser task · Parser implementation/);
+      assert.deepEqual(fixture.calls.opened, []);
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  test("falls back cleanly when capture context labels are empty", () => {
+    const row = formatInboxRow(
+      {
+        ...makeItem("empty-context"),
+        paneLabel: "  \t",
+        orchestrationLabel: "\n",
+        preview: "footer-only preview",
+      },
+      120,
+      60_000,
+    );
+
+    assert.match(row, /footer-only preview/);
+    assert.doesNotMatch(row, /undefined|null/);
+    assert.doesNotMatch(row, / · {2}/);
   });
 
   test("keeps the core identity fields at a narrow width", () => {
@@ -299,6 +368,7 @@ describe("inbox TUI", () => {
         agentLabel: "pi",
         sessionShortId: "a1b2c3",
         workspaceLabel: "workspace",
+        paneLabel: "探索タスク 🚀",
         preview: "Bun から Node への移行 世界 🚀",
       },
       32,
@@ -306,6 +376,7 @@ describe("inbox TUI", () => {
     );
 
     assert.ok(displayWidth(row) <= 32);
+    assert.match(row, /探索/);
   });
 
   test("truncates an over-long field while preserving the native session", () => {
@@ -345,8 +416,15 @@ describe("inbox TUI", () => {
 
     assert.equal(lines.length, 2);
     assert.match(lines[0] ?? "", /Herdr: default/);
+    assert.match(lines[1] ?? "", /Pane: a very long transient/);
     assert.ok(lines.every((line) => displayWidth(line) <= 28));
     assert.deepEqual(selectedMetadataLines(item, 23), []);
+
+    const fallbackLines = selectedMetadataLines(
+      { ...item, paneLabel: "  ", orchestrationLabel: "Claimed parser task" },
+      28,
+    );
+    assert.match(fallbackLines[1] ?? "", /Context: Claimed parser task/);
   });
 
   test("calculates inbox capacity and keeps list offsets valid", () => {
@@ -677,7 +755,7 @@ describe("inbox TUI", () => {
       await sendInput(instance, "j");
       await sendInput(instance, "\u001b[6~");
       const frame = instance.lastFrame() ?? "";
-      assert.equal(hasAgent(frame, "page-standalone-three"), true);
+      assert.match(frame, /Pane: pane-page-standalone-three/);
 
       await sendInput(instance, "\u001b[<64;1;1M");
       await sendInput(instance, "\r");
@@ -861,13 +939,13 @@ describe("inbox TUI", () => {
       await sendInput(instance, "\u001b[6~");
       frame = instance.lastFrame() ?? "";
       assert.ok(frame.split("\n").length <= 20);
-      assert.equal(hasAgent(frame, "narrow-16"), true);
+      assert.match(frame, /Pane: pane-narrow-16/);
       for (let index = 0; index < 4; index += 1) {
         await sendInput(instance, "\u001b[6~");
       }
       frame = instance.lastFrame() ?? "";
       assert.ok(frame.split("\n").length <= 20);
-      assert.equal(hasAgent(frame, "narrow-29"), true);
+      assert.match(frame, /Pane: pane-narrow-29/);
     } finally {
       instance.unmount();
     }

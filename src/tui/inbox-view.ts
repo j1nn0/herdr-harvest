@@ -298,6 +298,7 @@ export function formatInboxRow(item: InboxItem, width: number, nowMs = Date.now(
 
   const age = formatTimestamp(item.capturedAtMs, nowMs);
   const preview = item.preview || "(empty)";
+  const context = resultContextLabel(item);
   const fields: RowField[] = [
     { value: item.unread ? "●" : " ", minimumWidth: 1 },
     {
@@ -305,6 +306,9 @@ export function formatInboxRow(item: InboxItem, width: number, nowMs = Date.now(
       minimumWidth: Math.min(AGENT_MIN_DISPLAY_WIDTH, displayWidth(item.agentLabel)),
     },
     { value: item.sessionShortId, minimumWidth: displayWidth(item.sessionShortId) },
+    ...(context === null
+      ? []
+      : [{ value: context, minimumWidth: Math.min(4, displayWidth(context)) }]),
     { value: item.workspaceLabel, minimumWidth: Math.min(2, displayWidth(item.workspaceLabel)) },
     { value: age, minimumWidth: Math.min(5, displayWidth(age)) },
     { value: preview, minimumWidth: Math.min(4, displayWidth(preview)) },
@@ -343,8 +347,12 @@ export function formatGroupedInboxRow(item: InboxItem, width: number, nowMs = Da
   const availableWidth = Math.max(0, limit - displayWidth(indent));
   const age = formatTimestamp(item.capturedAtMs, nowMs);
   const preview = item.preview || "(empty)";
+  const context = resultContextLabel(item);
   const fields: RowField[] = [
     { value: item.unread ? "●" : " ", minimumWidth: 1 },
+    ...(context === null
+      ? []
+      : [{ value: context, minimumWidth: Math.min(4, displayWidth(context)) }]),
     { value: age, minimumWidth: Math.min(5, displayWidth(age)) },
     { value: item.workspaceLabel, minimumWidth: Math.min(2, displayWidth(item.workspaceLabel)) },
     { value: preview, minimumWidth: Math.min(4, displayWidth(preview)) },
@@ -403,10 +411,33 @@ export function selectedMetadataLines(item: InboxItem | undefined, width: number
     return [];
   }
 
+  const paneLabel = meaningfulLabel(item.paneLabel);
+  const context = resultContextLabel(item);
+  const contextLine =
+    paneLabel === null && context !== null
+      ? `Context: ${context}`
+      : `Pane: ${paneLabel ?? "unknown pane"}`;
   return [
     truncateDisplay(`Herdr: ${item.herdrSessionLabel ?? "unknown session"}`, limit),
-    truncateDisplay(`Pane: ${item.paneLabel}`, limit),
+    truncateDisplay(contextLine, limit),
   ];
+}
+
+function resultContextLabel(item: InboxItem): string | null {
+  const paneLabel = meaningfulLabel(item.paneLabel);
+  const orchestrationLabel = meaningfulLabel(item.orchestrationLabel);
+  if (paneLabel !== null && orchestrationLabel !== null && paneLabel !== orchestrationLabel) {
+    return `${orchestrationLabel} · ${paneLabel}`;
+  }
+  return paneLabel ?? orchestrationLabel;
+}
+
+function meaningfulLabel(value: string | null): string | null {
+  if (value === null) {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed.length === 0 ? null : trimmed;
 }
 
 export function formatTimestamp(timestampMs: number, nowMs = Date.now()): string {
