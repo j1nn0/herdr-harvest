@@ -445,3 +445,92 @@ function runNode(
     child.stdin.end(stdin);
   });
 }
+
+test("rolls back the pending row when the atomic completed insert fails", () => {
+  const db = openDatabase(":memory:");
+  const store = new PiInteractionStore(db);
+  try {
+    const sessionId = "session-atomic-fault";
+    const turnId = "turn-atomic-fault";
+    stageCodexPrompt(db, prompt(sessionId, turnId, "fault prompt"));
+    stageCodexReport(db, report(sessionId, turnId, "fault report"));
+    db.exec(`
+      CREATE TRIGGER codex_atomic_commit_fault
+      BEFORE INSERT ON pi_interactions
+      WHEN NEW.status = 'completed' AND NEW.provenance = 'codex-native-hooks'
+      BEGIN
+        SELECT RAISE(ABORT, 'synthetic completed insert failure');
+      END;
+    `);
+
+    assert.throws(
+      () => commitCodexTurn(db, store, commit(sessionId, turnId, "fault report")),
+      (error: unknown) =>
+        error !== null &&
+        typeof error === "object" &&
+        "code" in error &&
+        error.code === "store-write-failed",
+    );
+    assert.deepEqual(
+      Object.fromEntries(
+        Object.entries(
+          db
+            .prepare(
+              "SELECT status, effective_prompt, final_report FROM pi_interactions WHERE interaction_id = ?",
+            )
+            .get(codexInteractionId(sessionId, turnId)) as Record<string, unknown>,
+        ),
+      ),
+      { status: "pending", effective_prompt: "fault report", final_report: null },
+    );
+
+    db.exec("DROP TRIGGER codex_atomic_commit_fault");
+    const retry = commitCodexTurn(db, store, commit(sessionId, turnId, "fault report"));
+    assert.equal(retry.status, "inserted");
+    assert.equal(
+      store.get(sessionId, codexInteractionId(sessionId, turnId))?.finalReport,
+      "fault report",
+    );
+    assert.equal(
+      (
+        db
+          .prepare("SELECT COUNT(*) AS count FROM pi_interactions WHERE status = 'pending'")
+          .get() as { count: number }
+      ).count,
+      0,
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test("keeps duplicate notify idempotent and protects completed content", () => {
+  const db = openDatabase(":memory:");
+  const store = new PiInteractionStore(db);
+  try {
+    const sessionId = "session-atomic-dedup";
+    const turnId = "turn-atomic-dedup";
+    stageCodexPrompt(db, prompt(sessionId, turnId, "dedup prompt"));
+    stageCodexReport(db, report(sessionId, turnId, "dedup report"));
+
+    assert.equal(
+      commitCodexTurn(db, store, commit(sessionId, turnId, "dedup report")).status,
+      "inserted",
+    );
+    assert.equal(
+      commitCodexTurn(db, store, commit(sessionId, turnId, "dedup report")).status,
+      "duplicate",
+    );
+    const conflict = commitCodexTurn(db, store, commit(sessionId, turnId, "different report"));
+    assert.equal(conflict.status, "rejected");
+    if (conflict.status === "rejected") {
+      assert.equal(conflict.failure.reason, "conflicting-commit");
+    }
+    assert.equal(
+      store.get(sessionId, codexInteractionId(sessionId, turnId))?.finalReport,
+      "dedup report",
+    );
+  } finally {
+    db.close();
+  }
+});

@@ -106,6 +106,54 @@ export class PiInteractionStore {
     });
   }
 
+  /**
+   * Inserts one terminal interaction inside a transaction owned by the caller.
+   * This deliberately does not begin or commit a transaction.
+   */
+  insertIntoTransaction(input: PiInteractionInput): PiInteractionInsertOutcome {
+    const normalized = normalizeInput(input);
+    const dedupKey = piInteractionDedupKey(normalized);
+    const changes = this.db
+      .prepare(`
+        INSERT INTO pi_interactions (
+          interaction_id,
+          session_id,
+          submitted_prompt,
+          effective_prompt,
+          final_report,
+          status,
+          failure_reason,
+          provenance,
+          dedup_key
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(dedup_key) DO NOTHING
+      `)
+      .run(
+        normalized.interactionId,
+        normalized.sessionId,
+        normalized.submittedPrompt,
+        normalized.effectivePrompt,
+        normalized.finalReport,
+        normalized.status,
+        normalized.reason,
+        normalized.provenance,
+        dedupKey,
+      );
+    const row = this.db.prepare(SELECT_BY_DEDUP_KEY).get(dedupKey) as SqlRow | undefined;
+    if (row === undefined) {
+      throw new Error("Inserted Pi interaction could not be read back.");
+    }
+
+    const interaction = mapRow(row);
+    if (!sameContent(interaction, normalized, dedupKey)) {
+      throw new PiInteractionConflictError(dedupKey);
+    }
+    return {
+      status: changes.changes > 0 ? "inserted" : "duplicate",
+      interaction,
+    };
+  }
+
   get(sessionId: string, interactionId: string): PiInteraction | null {
     const row = this.db
       .prepare("SELECT * FROM pi_interactions WHERE session_id = ? AND interaction_id = ?")

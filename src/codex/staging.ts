@@ -70,16 +70,6 @@ interface StagingRow {
   dedupKey: string;
 }
 
-interface PreparedCommit {
-  input: PiInteractionInput;
-  sessionId: string;
-  turnId: string;
-}
-
-type CommitPreparation =
-  | { kind: "rejected"; failure: CodexContractFailure }
-  | { kind: "persist"; value: PreparedCommit };
-
 export function stageCodexPrompt(
   db: DatabaseSync,
   event: CodexPromptObservedEvent,
@@ -161,62 +151,53 @@ export function commitCodexTurn(
 ): CodexCommitOutcome {
   const interactionId = codexInteractionId(event.sessionId, event.turnId);
   const dedupKey = piInteractionDedupKey({ interactionId, sessionId: event.sessionId });
-  const preparation = withTransaction<CommitPreparation>(db, () => {
-    const row = readRow(db, dedupKey);
-    if (row === undefined) {
-      return {
-        kind: "rejected",
-        failure: failure("orphan-notify", event),
-      };
-    }
-    if (!isCodexRow(row, event.sessionId, interactionId)) {
-      return {
-        kind: "rejected",
-        failure: failure("staging-identity-conflict", event),
-      };
-    }
-
-    if (row.status === "pending") {
-      const completion = completeCodexPending(
-        {
-          sessionId: row.sessionId,
-          turnId: event.turnId,
-          submittedPrompt:
-            row.submittedPrompt === MISSING_PROMPT_SENTINEL ? null : row.submittedPrompt,
-          provisionalReport: row.provisionalReport,
-        },
-        event.finalReport,
-      );
-      if (!completion.ok) {
+  try {
+    return withTransaction<CodexCommitOutcome>(db, () => {
+      const row = readRow(db, dedupKey);
+      if (row === undefined) {
         return {
-          kind: "rejected",
-          failure: failure(completion.failure.reason, event),
-        };
-      }
-
-      const deleted = db
-        .prepare("DELETE FROM pi_interactions WHERE dedup_key = ? AND status = 'pending'")
-        .run(dedupKey);
-      if (deleted.changes !== 1) {
-        return {
-          kind: "rejected",
+          status: "rejected",
           failure: failure("orphan-notify", event),
         };
       }
-      return {
-        kind: "persist",
-        value: {
-          input: toPiInput(completion.interaction),
-          sessionId: event.sessionId,
-          turnId: event.turnId,
-        },
-      };
-    }
+      if (!isCodexRow(row, event.sessionId, interactionId)) {
+        return {
+          status: "rejected",
+          failure: failure("staging-identity-conflict", event),
+        };
+      }
 
-    return {
-      kind: "persist",
-      value: {
-        input: {
+      let input: PiInteractionInput;
+      if (row.status === "pending") {
+        const completion = completeCodexPending(
+          {
+            sessionId: row.sessionId,
+            turnId: event.turnId,
+            submittedPrompt:
+              row.submittedPrompt === MISSING_PROMPT_SENTINEL ? null : row.submittedPrompt,
+            provisionalReport: row.provisionalReport,
+          },
+          event.finalReport,
+        );
+        if (!completion.ok) {
+          return {
+            status: "rejected",
+            failure: failure(completion.failure.reason, event),
+          };
+        }
+
+        const deleted = db
+          .prepare("DELETE FROM pi_interactions WHERE dedup_key = ? AND status = 'pending'")
+          .run(dedupKey);
+        if (deleted.changes !== 1) {
+          return {
+            status: "rejected",
+            failure: failure("orphan-notify", event),
+          };
+        }
+        input = toPiInput(completion.interaction);
+      } else {
+        input = {
           interactionId: row.interactionId,
           sessionId: row.sessionId,
           submittedPrompt: row.submittedPrompt,
@@ -225,28 +206,16 @@ export function commitCodexTurn(
           status: "completed",
           reason: null,
           provenance: CODEX_NATIVE_HOOKS_PROVENANCE,
-        },
-        sessionId: event.sessionId,
-        turnId: event.turnId,
-      },
-    };
-  });
+        };
+      }
 
-  if (preparation.kind === "rejected") {
-    return { status: "rejected", failure: preparation.failure };
-  }
-
-  try {
-    return store.insert(preparation.value.input);
+      return store.insertIntoTransaction(input);
+    });
   } catch (error) {
     if (error instanceof PiInteractionConflictError) {
       return {
         status: "rejected",
-        failure: failureWithIds(
-          "conflicting-commit",
-          preparation.value.sessionId,
-          preparation.value.turnId,
-        ),
+        failure: failure("conflicting-commit", event),
       };
     }
     if (error instanceof PiInteractionValidationError) {
