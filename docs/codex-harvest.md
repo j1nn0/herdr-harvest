@@ -83,6 +83,9 @@ Changes to hooks, trust, notify configuration, or the environment affect new
 Codex processes only. Restart already-running Codex processes after enabling,
 changing, or uninstalling the setup.
 
+Symlinked setup paths are supported: entrypoints compare the real module path,
+so stow- or dotfiles-managed ancestor directories do not cause silent no-ops.
+
 ## Open and use the Inbox
 
 Start a new Codex process normally after the activation steps. Open the
@@ -203,6 +206,8 @@ fallback is used.
   has no staging timestamp. An explicit prune operation is future work.
 - The setup command does not modify `config.toml`; the printed top-level
   notify entry must be merged manually and must not be duplicated.
+- Hook entrypoints resolve their real module path, so user-level setup remains
+  usable when a stow- or dotfiles-managed ancestor directory is symlinked.
 - System-clipboard delivery was not live-verified for Codex. Automated
   service-level copy tests verify exact text using a fake clipboard provider.
 - No Herdr-mediated live Codex run is claimed by the automated checks. A

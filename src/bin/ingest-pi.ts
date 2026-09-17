@@ -1,6 +1,4 @@
-import { resolve } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { fileURLToPath } from "node:url";
 
 import { isPiCollectionEnabled, loadConfig } from "../config/config.ts";
 import type { PiInteractionInput } from "../domain/pi-interaction.ts";
@@ -11,6 +9,7 @@ import {
   PiInteractionValidationError,
 } from "../persistence/pi-interaction-store.ts";
 import { PiIngestInputError, parsePiInteractionInput } from "../pi/ingest.ts";
+import { isMainModule as isMainModulePath } from "../runtime/is-main-module.ts";
 
 /** Read one terminal interaction from stdin and insert it into harvest.db. */
 export async function runIngestPi(): Promise<number> {
@@ -90,8 +89,7 @@ function safeCode(error: unknown): string {
 }
 
 function isMainModule(): boolean {
-  const entry = process.argv[1];
-  return entry !== undefined && resolve(entry) === resolve(fileURLToPath(import.meta.url));
+  return isMainModulePath(import.meta.url, process.argv[1]);
 }
 
 if (isMainModule()) {

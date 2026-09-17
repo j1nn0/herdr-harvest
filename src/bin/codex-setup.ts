@@ -1,7 +1,5 @@
 #!/usr/bin/env -S node --experimental-strip-types
 import { homedir } from "node:os";
-import { resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 
 import {
   CodexSetupConflictError,
@@ -9,6 +7,7 @@ import {
   statusCodexCollector,
   uninstallCodexCollector,
 } from "../codex/setup.ts";
+import { isMainModule as isMainModulePath } from "../runtime/is-main-module.ts";
 
 interface SetupOutput {
   write: (text: string) => void;
@@ -140,8 +139,7 @@ function errorMessage(error: unknown): string {
 }
 
 function isMainModule(): boolean {
-  const entry = process.argv[1];
-  return entry !== undefined && resolve(entry) === resolve(fileURLToPath(import.meta.url));
+  return isMainModulePath(import.meta.url, process.argv[1]);
 }
 
 if (isMainModule()) {

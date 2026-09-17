@@ -1,5 +1,3 @@
-import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
 import { render } from "ink";
 import React from "react";
 import { createInboxService } from "../app/inbox-service.ts";
@@ -9,6 +7,7 @@ import { loadInboxDisplayConfig } from "../config/inbox-display-config.ts";
 import { openDatabase } from "../persistence/database.ts";
 import { PiInteractionStore } from "../persistence/pi-interaction-store.ts";
 import { SqliteResultStore } from "../persistence/result-store.ts";
+import { isMainModule as isMainModulePath } from "../runtime/is-main-module.ts";
 import { createApp } from "../tui/app.ts";
 import { disableWheelReporting, enableWheelReporting } from "../tui/mouse.ts";
 
@@ -61,8 +60,7 @@ export async function runInbox(env: NodeJS.ProcessEnv = process.env): Promise<nu
 }
 
 function isMainModule(): boolean {
-  const entrypoint = process.argv[1];
-  return entrypoint !== undefined && pathToFileURL(resolve(entrypoint)).href === import.meta.url;
+  return isMainModulePath(import.meta.url, process.argv[1]);
 }
 
 function errorMessage(error: unknown): string {

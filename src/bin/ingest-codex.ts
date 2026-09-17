@@ -1,6 +1,4 @@
 #!/usr/bin/env -S node --experimental-strip-types
-import { resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { readHookStdin, safeCode } from "../codex/hook-runtime.ts";
 import {
   type CodexIngestEvent,
@@ -9,6 +7,7 @@ import {
   parseCodexIngestInput,
 } from "../codex/ingest.ts";
 import { isCodexCollectionEnabled } from "../config/config.ts";
+import { isMainModule as isMainModulePath } from "../runtime/is-main-module.ts";
 
 export async function runIngestCodex(): Promise<number> {
   if (!isCodexCollectionEnabled(process.env)) {
@@ -73,8 +72,7 @@ export async function runIngestCodex(): Promise<number> {
 }
 
 function isMainModule(): boolean {
-  const entry = process.argv[1];
-  return entry !== undefined && resolve(entry) === resolve(fileURLToPath(import.meta.url));
+  return isMainModulePath(import.meta.url, process.argv[1]);
 }
 
 if (isMainModule()) {

@@ -1,6 +1,5 @@
-import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
 import { createHerdrClient, HerdrProcessError, isHerdrCliError } from "@j1nn0/herdr-plugin-sdk";
+import { isMainModule as isMainModulePath } from "../runtime/is-main-module.ts";
 
 const PLUGIN_ID = "j1nn0.herdr-harvest";
 const ENTRYPOINT = "inbox";
@@ -42,8 +41,7 @@ function errorDiagnostic(error: unknown): string {
 }
 
 function isMainModule(): boolean {
-  const entrypoint = process.argv[1];
-  return entrypoint !== undefined && pathToFileURL(resolve(entrypoint)).href === import.meta.url;
+  return isMainModulePath(import.meta.url, process.argv[1]);
 }
 
 if (isMainModule()) {
