@@ -22,7 +22,8 @@ export interface ResultViewProps {
 
 export const ResultView: FC<ResultViewProps> = ({ detail, scrollOffset, status = null }) => {
   const { stdout } = useStdout();
-  const lines = detail.rawText.split("\n");
+  const isPi = detail.kind === "pi";
+  const lines = detailContentLines(detail);
   const hasOrchestrationContext = detail.orchestrationId !== null;
   const viewport = resultViewportLines(stdout.rows, hasOrchestrationContext);
   const maxOffset = Math.max(0, lines.length - viewport);
@@ -38,12 +39,21 @@ export const ResultView: FC<ResultViewProps> = ({ detail, scrollOffset, status =
       ),
     );
 
-  const title = detail.archived
-    ? `Harvest Archived Result · ${detail.agentLabel}`
-    : `Harvest Result · ${detail.agentLabel}`;
-  const footer = detail.archived
-    ? "↑/↓ or k/j scroll · PageUp/PageDown page · y copy · r restore · Esc inbox"
-    : "↑/↓ or k/j scroll · PageUp/PageDown page · y copy · a archive · Esc inbox";
+  const title = isPi
+    ? `Pi Interaction · ${piStatusLabel(detail.status)}`
+    : detail.archived
+      ? `Harvest Archived Result · ${detail.agentLabel}`
+      : `Harvest Result · ${detail.agentLabel}`;
+  const footer = isPi
+    ? (detail.finalReport ?? null) === null
+      ? "↑/↓ or k/j scroll · PageUp/PageDown page · p copy prompt · f unavailable · y copy prompt · Esc inbox"
+      : "↑/↓ or k/j scroll · PageUp/PageDown page · p copy prompt · f copy final report · y copy final report · Esc inbox"
+    : detail.archived
+      ? "↑/↓ or k/j scroll · PageUp/PageDown page · y copy · r restore · Esc inbox"
+      : "↑/↓ or k/j scroll · PageUp/PageDown page · y copy · a archive · Esc inbox";
+  const subtitle = isPi
+    ? `Pi session ${detail.sessionShortId} · ${detail.status === "failed" ? `failure: ${detail.reason ?? "unknown failure"}` : "terminal interaction"}`
+    : `Herdr: ${detail.herdrSessionLabel ?? "unknown session"} · session ${detail.sessionShortId} · workspace ${detail.workspaceLabel} · pane ${detail.paneLabel} · ${detail.captureSource}`;
   const orchestrationContext =
     detail.orchestrationId === null
       ? null
@@ -57,11 +67,7 @@ export const ResultView: FC<ResultViewProps> = ({ detail, scrollOffset, status =
     Box,
     { flexDirection: "column", paddingX: 1 },
     h(Text, { bold: true, wrap: "truncate" }, title),
-    h(
-      Text,
-      { dimColor: true, wrap: "truncate" },
-      `Herdr: ${detail.herdrSessionLabel ?? "unknown session"} · session ${detail.sessionShortId} · workspace ${detail.workspaceLabel} · pane ${detail.paneLabel} · ${detail.captureSource}`,
-    ),
+    h(Text, { dimColor: true, wrap: "truncate" }, subtitle),
     orchestrationContext,
     h(Text, { dimColor: true, wrap: "truncate" }, `line ${start + 1}-${end} of ${lines.length}`),
     h(Box, { flexDirection: "column" }, visibleLines),
@@ -69,6 +75,37 @@ export const ResultView: FC<ResultViewProps> = ({ detail, scrollOffset, status =
     h(Text, { dimColor: true, wrap: "truncate" }, footer),
   );
 };
+
+/**
+ * Logical body lines for the detail view. Pi fields are delimited by labels;
+ * their source strings are split only for viewport rendering and remain
+ * available verbatim through the app copy actions.
+ */
+export function detailContentLines(detail: InboxDetail): string[] {
+  if (detail.kind !== "pi") {
+    return detail.rawText.split("\n");
+  }
+
+  const promptLines = (detail.submittedPrompt ?? "").split("\n");
+  const reportLines =
+    typeof detail.finalReport !== "string"
+      ? [`UNAVAILABLE: ${detail.reason ?? "interaction failed"}`]
+      : detail.finalReport.split("\n");
+  return ["PROMPT", ...promptLines, "", "FINAL REPORT", ...reportLines];
+}
+
+function piStatusLabel(status: InboxDetail["status"]): string {
+  switch (status) {
+    case "completed":
+      return "Completed";
+    case "failed":
+      return "Failed-incomplete";
+    case "pending":
+      return "Pending";
+    default:
+      return "Unknown";
+  }
+}
 
 export function resultViewportLines(
   rows: number | undefined,

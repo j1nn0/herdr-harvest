@@ -4,6 +4,7 @@ import type { ReadSource } from "@j1nn0/herdr-plugin-sdk";
 export interface HarvestConfig {
   captureLines: number;
   captureSource: ReadSource;
+  piCollectionEnabled: boolean;
   databasePath: string;
   herdrSessionKey: string | null;
   herdrSessionLabel: string | null;
@@ -30,17 +31,37 @@ export function loadConfig(env: Record<string, string | undefined>): {
   const warnings: string[] = [];
   const captureLines = parseCaptureLines(env.HARVEST_CAPTURE_LINES, warnings);
   const captureSource = parseCaptureSource(env.HARVEST_CAPTURE_SOURCE, warnings);
+  const piCollectionEnabled = parsePiCollectionEnabled(env.HARVEST_PI_COLLECT, warnings);
 
   return {
     config: {
       captureLines,
       captureSource,
+      piCollectionEnabled,
       databasePath: join(stateDir, "harvest.db"),
       herdrSessionKey: parseHerdrSessionKey(env.HERDR_SOCKET_PATH),
       herdrSessionLabel: parseHerdrSessionLabel(env.HERDR_SOCKET_PATH),
     },
     warnings,
   };
+}
+
+/** Production Pi collection is opt-in and accepts only the explicit value `1`. */
+export function isPiCollectionEnabled(env: Readonly<Record<string, string | undefined>>): boolean {
+  return env.HARVEST_PI_COLLECT === "1";
+}
+
+function parsePiCollectionEnabled(value: string | undefined, warnings: string[]): boolean {
+  if (value === undefined || value === "0") {
+    return false;
+  }
+  if (value === "1") {
+    return true;
+  }
+  warnings.push(
+    `HARVEST_PI_COLLECT must be 1 to enable Pi collection or 0 to disable it; collection remains disabled (received ${JSON.stringify(value)}).`,
+  );
+  return false;
 }
 
 function parseCaptureLines(value: string | undefined, warnings: string[]): number {

@@ -353,7 +353,7 @@ export function formatInboxRow(
   const fields = resultFields(item, displayConfig.standaloneFields, nowMs);
 
   const { visibleFields, separator } = chooseVisibleFields(fields, limit);
-  return fitFields(visibleFields, limit, separator);
+  return appendItemBadge(fitFields(visibleFields, limit, separator), item, limit);
 }
 
 export function formatOrchestrationHeader(
@@ -399,7 +399,8 @@ export function formatGroupedInboxRow(
   const fields = resultFields(item, displayConfig.groupedFields, nowMs);
   const { visibleFields, separator } = chooseVisibleFields(fields, availableWidth);
   const row = `${indent}${fitFields(visibleFields, availableWidth, separator)}`;
-  return displayWidth(row) <= limit ? row : truncateDisplay(row, limit);
+  const labeledRow = appendItemBadge(row, item, limit);
+  return displayWidth(labeledRow) <= limit ? labeledRow : truncateDisplay(labeledRow, limit);
 }
 
 function resultCountLabel(count: number): string {
@@ -494,6 +495,30 @@ function resultFieldValue(item: InboxItem, field: ResultField, nowMs: number): s
     case "preview":
       return item.preview || "(empty)";
   }
+}
+
+/** Short, always-visible kind/status marker carried by the inbox row. */
+export function inboxItemBadge(item: InboxItem): string {
+  if (item.kind !== "pi") {
+    return "Legacy";
+  }
+  switch (item.status) {
+    case "completed":
+      return "Pi · Completed";
+    case "failed":
+      return "Pi · Failed-incomplete";
+    case "pending":
+      return "Pi · Pending";
+    default:
+      return "Pi · Unknown";
+  }
+}
+
+function appendItemBadge(row: string, item: InboxItem, width: number): string {
+  if (row.length === 0) {
+    return row;
+  }
+  return truncateDisplay(`${row} · ${inboxItemBadge(item)}`, width);
 }
 
 function resultFieldMinimumWidth(field: ResultField, value: string): number {

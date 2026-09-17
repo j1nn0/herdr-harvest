@@ -7,6 +7,7 @@ import { createClipboard } from "../clipboard/index.ts";
 import { loadConfig } from "../config/config.ts";
 import { loadInboxDisplayConfig } from "../config/inbox-display-config.ts";
 import { openDatabase } from "../persistence/database.ts";
+import { PiInteractionStore } from "../persistence/pi-interaction-store.ts";
 import { SqliteResultStore } from "../persistence/result-store.ts";
 import { createApp } from "../tui/app.ts";
 import { disableWheelReporting, enableWheelReporting } from "../tui/mouse.ts";
@@ -34,9 +35,11 @@ export async function runInbox(env: NodeJS.ProcessEnv = process.env): Promise<nu
   let store: SqliteResultStore | null = null;
   try {
     store = new SqliteResultStore(db);
+    const piStore = new PiInteractionStore(db);
     const clipboard = createClipboard({ env });
     const port = createInboxService({
       store,
+      piStore,
       clipboard,
       now: () => Date.now(),
     });

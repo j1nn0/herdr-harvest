@@ -1,6 +1,7 @@
 import type { ClipboardProvider, CopyReport } from "../clipboard/provider.ts";
 import { ClipboardError } from "../clipboard/provider.ts";
 import type { OrchestrationRole } from "../domain/orchestration.ts";
+import type { PiInteraction, PiInteractionStatus } from "../domain/pi-interaction.ts";
 import type { AgentSessionKind, HarvestResult } from "../domain/result.ts";
 import { preview as makePreview } from "../domain/result.ts";
 import type { ResultStore } from "../persistence/result-store.ts";
@@ -9,6 +10,15 @@ import { sessionShortId } from "./session-label.ts";
 
 export interface InboxItem {
   id: string;
+  /** Legacy rows predate Pi collection; omitted fixture values are treated as legacy. */
+  kind?: "legacy" | "pi";
+  /** Pi lifecycle state. Legacy rows do not have a Pi state. */
+  status?: PiInteractionStatus;
+  /** Failure reason for an incomplete Pi interaction, when supplied. */
+  reason?: string | null;
+  submittedPrompt?: string;
+  effectivePrompt?: string | null;
+  finalReport?: string | null;
   agentLabel: string;
   sessionShortId: string;
   agentSessionKind: AgentSessionKind | null;
@@ -30,6 +40,13 @@ export interface InboxDetail extends InboxItem {
   captureSource: string;
   requestedLineCount: number;
   paneId: string;
+}
+
+export type InboxCopyField = "prompt" | "finalReport";
+
+/** Read-only source used by the inbox; persistence remains owned by C1. */
+export interface PiInteractionSource {
+  list(): PiInteraction[];
 }
 
 /** Which collection the inbox lists. Active is the default. */
@@ -56,33 +73,41 @@ export interface InboxPort {
   open(id: string): InboxDetail | null;
   archive(id: string): boolean;
   restore(id: string): boolean;
-  copy(id: string): Promise<CopyReport>;
+  copy(id: string, field?: InboxCopyField): Promise<CopyReport>;
 }
 
 export function createInboxService(deps: {
   store: ResultStore;
   clipboard: ClipboardProvider;
   now: () => number;
+  piStore?: PiInteractionSource;
 }): InboxPort {
   return {
-    list: (request?: InboxScope | InboxListOptions) => listResults(deps.store, request),
-    open: (id) => openResult(deps.store, id, deps.now),
-    archive: (id) => archiveResult(deps.store, id, deps.now),
-    restore: (id) => restoreResult(deps.store, id),
-    copy: (id) => copyResult(deps.store, deps.clipboard, id),
+    list: (request?: InboxScope | InboxListOptions) =>
+      listResults(deps.store, deps.piStore, request),
+    open: (id) => openResult(deps.store, deps.piStore, id, deps.now),
+    archive: (id) => archiveResult(deps.store, deps.piStore, id, deps.now),
+    restore: (id) => restoreResult(deps.store, deps.piStore, id),
+    copy: (id, field) => copyResult(deps.store, deps.piStore, deps.clipboard, id, field),
   };
 }
 
 function listResults(
   store: ResultStore,
+  piStore: PiInteractionSource | undefined,
   request: InboxScope | InboxListOptions | undefined,
 ): InboxItem[] {
   const { scope, query } = resolveListRequest(request);
-  const ordered = orderedResults(store, scope);
-  const matched = isSearchQueryActive(query)
-    ? ordered.filter((result) => matchesResultSearch(result, query))
-    : ordered;
-  return matched.map(toItem);
+  const legacyResults = orderedResults(store, scope);
+  const legacyItems = isSearchQueryActive(query)
+    ? legacyResults.filter((result) => matchesResultSearch(result, query)).map(toItem)
+    : legacyResults.map(toItem);
+  const piItems = (scope === "archived" ? [] : (piStore?.list() ?? []))
+    .map(toPiItem)
+    .filter((item) => !isSearchQueryActive(query) || matchesInboxSearch(item, query));
+  const items =
+    scope === "all" ? orderAllItems([...legacyItems, ...piItems]) : [...legacyItems, ...piItems];
+  return items;
 }
 
 /** `list("archived")` and `list({ mode: "archived" })` describe the same request. */
@@ -122,7 +147,29 @@ function compareByCaptureDesc(left: HarvestResult, right: HarvestResult): number
   return left.id < right.id ? 1 : -1;
 }
 
-function openResult(store: ResultStore, id: string, now: () => number): InboxDetail | null {
+function orderAllItems(items: InboxItem[]): InboxItem[] {
+  return items.sort((left, right) => {
+    if (left.capturedAtMs !== right.capturedAtMs) {
+      return right.capturedAtMs - left.capturedAtMs;
+    }
+    if (left.id === right.id) {
+      return 0;
+    }
+    return left.id < right.id ? 1 : -1;
+  });
+}
+
+function openResult(
+  store: ResultStore,
+  piStore: PiInteractionSource | undefined,
+  id: string,
+  now: () => number,
+): InboxDetail | null {
+  const piInteraction = findPiInteraction(piStore, id);
+  if (piInteraction !== null) {
+    return toPiDetail(piInteraction);
+  }
+
   const result = store.get(id);
   if (result === null) {
     return null;
@@ -132,7 +179,15 @@ function openResult(store: ResultStore, id: string, now: () => number): InboxDet
   return toDetail(markedRead ?? result);
 }
 
-function archiveResult(store: ResultStore, id: string, now: () => number): boolean {
+function archiveResult(
+  store: ResultStore,
+  piStore: PiInteractionSource | undefined,
+  id: string,
+  now: () => number,
+): boolean {
+  if (findPiInteraction(piStore, id) !== null) {
+    return false;
+  }
   const result = store.get(id);
   if (result === null || result.archivedAtMs !== null) {
     return false;
@@ -140,7 +195,14 @@ function archiveResult(store: ResultStore, id: string, now: () => number): boole
   return store.archive(id, now()) !== null;
 }
 
-function restoreResult(store: ResultStore, id: string): boolean {
+function restoreResult(
+  store: ResultStore,
+  piStore: PiInteractionSource | undefined,
+  id: string,
+): boolean {
+  if (findPiInteraction(piStore, id) !== null) {
+    return false;
+  }
   const result = store.get(id);
   if (result === null || result.archivedAtMs === null) {
     return false;
@@ -150,9 +212,24 @@ function restoreResult(store: ResultStore, id: string): boolean {
 
 function copyResult(
   store: ResultStore,
+  piStore: PiInteractionSource | undefined,
   clipboard: ClipboardProvider,
   id: string,
+  field: InboxCopyField | undefined,
 ): Promise<CopyReport> {
+  const piInteraction = findPiInteraction(piStore, id);
+  if (piInteraction !== null) {
+    return copyPiInteraction(clipboard, piInteraction, field);
+  }
+
+  if (field !== undefined) {
+    return Promise.reject(
+      new ClipboardError(`Cannot copy ${field} from legacy result ${id}.`, [
+        `result ${id}: Pi fields are unavailable for legacy results`,
+      ]),
+    );
+  }
+
   const result = store.get(id);
   if (result === null) {
     return Promise.reject(
@@ -165,6 +242,7 @@ function copyResult(
 function toItem(result: HarvestResult): InboxItem {
   return {
     id: result.id,
+    kind: "legacy",
     agentLabel: result.agentName ?? result.agentKind ?? "unknown agent",
     sessionShortId: sessionShortId(result),
     agentSessionKind: result.agentSessionKind,
@@ -190,4 +268,86 @@ function toDetail(result: HarvestResult): InboxDetail {
     requestedLineCount: result.requestedLineCount,
     paneId: result.paneId,
   };
+}
+
+function toPiItem(interaction: PiInteraction): InboxItem {
+  const previewSource = interaction.finalReport ?? interaction.submittedPrompt;
+  return {
+    id: interaction.interactionId,
+    kind: "pi",
+    status: interaction.status,
+    reason: interaction.reason,
+    submittedPrompt: interaction.submittedPrompt,
+    effectivePrompt: interaction.effectivePrompt,
+    finalReport: interaction.finalReport,
+    agentLabel: "Pi",
+    sessionShortId: shortSessionId(interaction.sessionId),
+    agentSessionKind: "id",
+    agentSessionValue: interaction.sessionId,
+    orchestrationId: null,
+    orchestrationLabel: null,
+    orchestrationRole: null,
+    workspaceLabel: "Pi",
+    herdrSessionLabel: null,
+    paneLabel: "Pi interaction",
+    capturedAtMs: 0,
+    preview: makePreview(previewSource),
+    unread: false,
+    archived: false,
+  };
+}
+
+function toPiDetail(interaction: PiInteraction): InboxDetail {
+  return {
+    ...toPiItem(interaction),
+    rawText: "",
+    captureSource: interaction.provenance,
+    requestedLineCount: 0,
+    paneId: "pi",
+  };
+}
+
+function findPiInteraction(
+  piStore: PiInteractionSource | undefined,
+  id: string,
+): PiInteraction | null {
+  return piStore?.list().find((interaction) => interaction.interactionId === id) ?? null;
+}
+
+function copyPiInteraction(
+  clipboard: ClipboardProvider,
+  interaction: PiInteraction,
+  field: InboxCopyField | undefined,
+): Promise<CopyReport> {
+  const selectedField = field ?? (interaction.finalReport === null ? "prompt" : "finalReport");
+  if (selectedField === "prompt") {
+    return clipboard.copy(interaction.submittedPrompt);
+  }
+  if (interaction.finalReport === null) {
+    return Promise.reject(
+      new ClipboardError(`Pi interaction ${interaction.interactionId} has no final report.`, [
+        `interaction ${interaction.interactionId}: final report unavailable`,
+      ]),
+    );
+  }
+  return clipboard.copy(interaction.finalReport);
+}
+
+function matchesInboxSearch(item: InboxItem, query: string): boolean {
+  const needle = query.normalize("NFC").toLowerCase();
+  return [
+    item.id,
+    item.sessionShortId,
+    item.submittedPrompt,
+    item.effectivePrompt,
+    item.finalReport,
+    item.reason,
+    item.status,
+  ]
+    .filter((value): value is string => value !== null && value !== undefined)
+    .some((value) => value.normalize("NFC").toLowerCase().includes(needle));
+}
+
+function shortSessionId(sessionId: string): string {
+  return sessionId.slice(0, 6);
 }

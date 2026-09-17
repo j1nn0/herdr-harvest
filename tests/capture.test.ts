@@ -19,6 +19,7 @@ import { SqliteResultStore } from "../src/persistence/result-store.ts";
 const CONFIG: HarvestConfig = {
   captureLines: 120,
   captureSource: "detection",
+  piCollectionEnabled: false,
   databasePath: ":memory:",
   herdrSessionKey: "/tmp/herdr/sessions/nightly/herdr.sock",
   herdrSessionLabel: "nightly",

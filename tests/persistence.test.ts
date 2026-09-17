@@ -110,7 +110,7 @@ describe("migrations", () => {
     const db = openDatabase(":memory:");
     const store = new SqliteResultStore(db);
     try {
-      assert.equal(versionOf(db), 4);
+      assert.equal(versionOf(db), 5);
       assert.deepEqual(
         resultColumnNames(db).filter((name) => name.startsWith("orchestration_")),
         ["orchestration_id", "orchestration_label", "orchestration_role"],
@@ -249,13 +249,18 @@ test("upgrades a v1 database without changing legacy rows", () => {
 
     assert.deepEqual(runMigrations(db), {
       from: 1,
-      to: 4,
-      applied: ["add-herdr-session", "create-pane-lifecycle", "add-orchestration-claim"],
+      to: 5,
+      applied: [
+        "add-herdr-session",
+        "create-pane-lifecycle",
+        "add-orchestration-claim",
+        "create-pi-interactions",
+      ],
     });
     const version = db.prepare("PRAGMA user_version").get() as
       | { user_version?: number }
       | undefined;
-    assert.equal(version?.user_version, 4);
+    assert.equal(version?.user_version, 5);
 
     const store = new SqliteResultStore(db);
     assert.deepEqual(store.get(legacy.id), {
@@ -372,11 +377,11 @@ test("upgrades a v2 database without changing legacy rows", () => {
 
     assert.deepEqual(runMigrations(db), {
       from: 2,
-      to: 4,
-      applied: ["create-pane-lifecycle", "add-orchestration-claim"],
+      to: 5,
+      applied: ["create-pane-lifecycle", "add-orchestration-claim", "create-pi-interactions"],
     });
     const version = db.prepare("PRAGMA user_version").get();
-    assert.equal(version?.user_version, 4);
+    assert.equal(version?.user_version, 5);
 
     const store = new SqliteResultStore(db);
     assert.deepEqual(store.get(legacy.id), {
@@ -496,10 +501,10 @@ test("upgrades a v3 database without changing legacy rows", () => {
 
     assert.deepEqual(runMigrations(db), {
       from: 3,
-      to: 4,
-      applied: ["add-orchestration-claim"],
+      to: 5,
+      applied: ["add-orchestration-claim", "create-pi-interactions"],
     });
-    assert.equal(versionOf(db), 4);
+    assert.equal(versionOf(db), 5);
 
     const store = new SqliteResultStore(db);
     assert.deepEqual(store.get(legacy.id), {
@@ -637,7 +642,7 @@ describe("SqliteResultStore", () => {
 
       assert.equal(result.requestedLineCount, 5000);
       assert.equal(row?.capture_line_count, 5000);
-      assert.equal(versionOf(db), 4);
+      assert.equal(versionOf(db), 5);
       assert.ok(resultColumnNames(db).includes("capture_line_count"));
     } finally {
       store.close();

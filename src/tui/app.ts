@@ -2,6 +2,7 @@ import { type Key, useApp, useInput, useStdout } from "ink";
 import React, { type FC, useEffect, useRef, useState } from "react";
 import { buildInboxGrouping, type InboxDisplayRow } from "../app/inbox-groups.ts";
 import type {
+  InboxCopyField,
   InboxDetail,
   InboxItem,
   InboxMode,
@@ -32,7 +33,7 @@ import {
   selectedMetadataLines,
 } from "./inbox-view.ts";
 import { parseWheelEvent, WHEEL_STEP } from "./mouse.ts";
-import { ResultView, resultViewportLines } from "./result-view.ts";
+import { detailContentLines, ResultView, resultViewportLines } from "./result-view.ts";
 
 const h = React.createElement;
 const STATUS_DURATION_MS = 4_000;
@@ -300,9 +301,9 @@ export function createApp(
       setStatus({ text: copyFailureMessage(error), error: true });
     };
 
-    const copy = (id: string, bytes: number | undefined): void => {
+    const copy = (id: string, bytes: number | undefined, field?: InboxCopyField): void => {
       void Promise.resolve()
-        .then(() => port.copy(id))
+        .then(() => port.copy(id, field))
         .then(
           (report) => setStatus({ text: copySuccessMessage(report, bytes), error: false }),
           (error: unknown) => showError(error),
@@ -343,8 +344,13 @@ export function createApp(
           setDetail(null);
           setView("inbox");
         }
+        const item = items.find((candidate) => candidate.id === id);
         setStatus({
-          text: applied ? `Archived result ${id}.` : `Result ${id} is already archived.`,
+          text: applied
+            ? `Archived result ${id}.`
+            : item?.kind === "pi"
+              ? `Pi interaction ${id} cannot be archived.`
+              : `Result ${id} is already archived.`,
           error: false,
         });
       } catch (error) {
@@ -360,8 +366,13 @@ export function createApp(
           setDetail(null);
           setView("inbox");
         }
+        const item = items.find((candidate) => candidate.id === id);
         setStatus({
-          text: applied ? `Restored result ${id}.` : `Result ${id} is already active.`,
+          text: applied
+            ? `Restored result ${id}.`
+            : item?.kind === "pi"
+              ? `Pi interaction ${id} cannot be restored.`
+              : `Result ${id} is already active.`,
           error: false,
         });
       } catch (error) {
@@ -390,7 +401,7 @@ export function createApp(
           moveInboxPosition(step);
         } else if (detail !== null) {
           setScrollOffset((current) =>
-            clampScroll(current + step, detail.rawText.split("\n").length, viewport),
+            clampScroll(current + step, detailContentLines(detail).length, viewport),
           );
         }
         return;
@@ -517,7 +528,8 @@ export function createApp(
           if (selected === undefined) {
             setStatus({ text: "There are no results to copy.", error: true });
           } else {
-            copy(selected.id, undefined);
+            const field = defaultPiCopyField(selected);
+            copy(selected.id, copyByteLength(selected, field), field);
           }
           return;
         }
@@ -561,37 +573,58 @@ export function createApp(
       }
       if (key.upArrow || input === "k") {
         setScrollOffset((current) =>
-          clampScroll(current - 1, detail.rawText.split("\n").length, viewport),
+          clampScroll(current - 1, detailContentLines(detail).length, viewport),
         );
         return;
       }
       if (key.downArrow || input === "j") {
         setScrollOffset((current) =>
-          clampScroll(current + 1, detail.rawText.split("\n").length, viewport),
+          clampScroll(current + 1, detailContentLines(detail).length, viewport),
         );
         return;
       }
       if (key.pageUp) {
         setScrollOffset((current) =>
-          clampScroll(current - viewport, detail.rawText.split("\n").length, viewport),
+          clampScroll(current - viewport, detailContentLines(detail).length, viewport),
         );
         return;
       }
       if (key.pageDown) {
         setScrollOffset((current) =>
-          clampScroll(current + viewport, detail.rawText.split("\n").length, viewport),
+          clampScroll(current + viewport, detailContentLines(detail).length, viewport),
         );
         return;
       }
+      if (detail.kind === "pi" && input === "p") {
+        copy(detail.id, copyByteLength(detail, "prompt"), "prompt");
+        return;
+      }
+      if (detail.kind === "pi" && input === "f") {
+        if (typeof detail.finalReport !== "string") {
+          setStatus({ text: "This Pi interaction has no final report to copy.", error: true });
+        } else {
+          copy(detail.id, copyByteLength(detail, "finalReport"), "finalReport");
+        }
+        return;
+      }
       if (input === "y") {
-        copy(detail.id, Buffer.byteLength(detail.rawText, "utf8"));
+        const field = defaultPiCopyField(detail);
+        copy(detail.id, copyByteLength(detail, field), field);
         return;
       }
       if (input === "a" && !detail.archived) {
+        if (detail.kind === "pi") {
+          setStatus({ text: `Pi interaction ${detail.id} cannot be archived.`, error: true });
+          return;
+        }
         archive(detail.id, true);
         return;
       }
       if (input === "r" && detail.archived) {
+        if (detail.kind === "pi") {
+          setStatus({ text: `Pi interaction ${detail.id} cannot be restored.`, error: true });
+          return;
+        }
         restore(detail.id, true);
       }
     });
@@ -601,7 +634,10 @@ export function createApp(
         detail,
         scrollOffset,
         status,
-        onCopy: () => copy(detail.id, Buffer.byteLength(detail.rawText, "utf8")),
+        onCopy: () => {
+          const field = defaultPiCopyField(detail);
+          copy(detail.id, copyByteLength(detail, field), field);
+        },
         onArchive: () => archive(detail.id, true),
         onBack: backToInbox,
       });
@@ -824,6 +860,28 @@ function focusEqual(left: InboxFocus | null, right: InboxFocus | null): boolean 
 function clampScroll(offset: number, lineCount: number, viewport: number): number {
   const maxOffset = Math.max(0, lineCount - Math.max(1, viewport));
   return Math.min(Math.max(0, offset), maxOffset);
+}
+
+function defaultPiCopyField(item: InboxItem): InboxCopyField | undefined {
+  if (item.kind !== "pi") {
+    return undefined;
+  }
+  return typeof item.finalReport === "string" ? "finalReport" : "prompt";
+}
+
+function copyByteLength(
+  item: InboxItem | InboxDetail,
+  field: InboxCopyField | undefined,
+): number | undefined {
+  if (field === "prompt") {
+    return Buffer.byteLength(item.submittedPrompt ?? "", "utf8");
+  }
+  if (field === "finalReport") {
+    return typeof item.finalReport === "string"
+      ? Buffer.byteLength(item.finalReport, "utf8")
+      : undefined;
+  }
+  return "rawText" in item ? Buffer.byteLength(item.rawText, "utf8") : undefined;
 }
 
 function copySuccessMessage(report: CopyReport, bytes: number | undefined): string {

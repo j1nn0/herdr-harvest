@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, test } from "node:test";
 
-import { loadConfig } from "../src/config/config.ts";
+import { isPiCollectionEnabled, loadConfig } from "../src/config/config.ts";
 import { removeDirectory } from "./helpers/remove-directory.ts";
 
 describe("loadConfig", () => {
@@ -14,6 +14,7 @@ describe("loadConfig", () => {
     assert.deepEqual(loaded.config, {
       captureLines: 400,
       captureSource: "recent-unwrapped",
+      piCollectionEnabled: false,
       databasePath: join("/tmp/harvest", "harvest.db"),
       herdrSessionKey: null,
       herdrSessionLabel: null,
@@ -42,6 +43,31 @@ describe("loadConfig", () => {
     assert.equal(loaded.config.herdrSessionKey, null);
     assert.equal(loaded.config.herdrSessionLabel, null);
     assert.deepEqual(loaded.warnings, []);
+  });
+
+  test("enables Pi collection only for the explicit opt-in value", () => {
+    const loaded = loadConfig({
+      HARVEST_STATE_DIR: "/tmp/harvest",
+      HARVEST_PI_COLLECT: "1",
+    });
+
+    assert.equal(loaded.config.piCollectionEnabled, true);
+    assert.equal(isPiCollectionEnabled({ HARVEST_PI_COLLECT: "1" }), true);
+    assert.deepEqual(loaded.warnings, []);
+  });
+
+  test("keeps Pi collection disabled for removal and invalid values", () => {
+    assert.equal(isPiCollectionEnabled({}), false);
+    assert.equal(isPiCollectionEnabled({ HARVEST_PI_COLLECT: "0" }), false);
+    assert.equal(isPiCollectionEnabled({ HARVEST_PI_COLLECT: "yes" }), false);
+
+    const loaded = loadConfig({
+      HARVEST_STATE_DIR: "/tmp/harvest",
+      HARVEST_PI_COLLECT: "yes",
+    });
+    assert.equal(loaded.config.piCollectionEnabled, false);
+    assert.equal(loaded.warnings.length, 1);
+    assert.match(loaded.warnings[0] ?? "", /HARVEST_PI_COLLECT/);
   });
 
   test("derives the default Herdr session identity from the socket path", () => {

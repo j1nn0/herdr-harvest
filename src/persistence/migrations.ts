@@ -84,11 +84,37 @@ const addOrchestrationClaim: Migration = {
   },
 };
 
+const createPiInteractions: Migration = {
+  version: 5,
+  name: "create-pi-interactions",
+  up(db) {
+    db.exec(`
+      CREATE TABLE pi_interactions (
+        interaction_id  TEXT NOT NULL,
+        session_id      TEXT NOT NULL,
+        submitted_prompt TEXT NOT NULL,
+        effective_prompt TEXT,
+        final_report    TEXT,
+        status          TEXT NOT NULL CHECK (status IN ('pending', 'completed', 'failed')),
+        failure_reason  TEXT,
+        provenance      TEXT NOT NULL,
+        dedup_key       TEXT NOT NULL,
+        PRIMARY KEY (session_id, interaction_id),
+        CHECK (status != 'completed' OR (final_report IS NOT NULL AND failure_reason IS NULL)),
+        CHECK (status != 'failed' OR (final_report IS NULL AND failure_reason IS NOT NULL)),
+        CHECK (status != 'pending' OR final_report IS NULL)
+      );
+      CREATE UNIQUE INDEX pi_interactions_dedup_key ON pi_interactions (dedup_key);
+    `);
+  },
+};
+
 export const MIGRATIONS: readonly Migration[] = [
   createResults,
   addHerdrSession,
   createPaneLifecycle,
   addOrchestrationClaim,
+  createPiInteractions,
 ];
 
 export function runMigrations(db: DatabaseSync): { from: number; to: number; applied: string[] } {
