@@ -11,10 +11,10 @@ import { sessionShortId } from "./session-label.ts";
 export interface InboxItem {
   id: string;
   /** Legacy rows predate Pi collection; omitted fixture values are treated as legacy. */
-  kind?: "legacy" | "pi";
-  /** Pi lifecycle state. Legacy rows do not have a Pi state. */
+  kind?: "legacy" | "pi" | "codex";
+  /** Pi/Codex lifecycle state. Legacy rows do not have an interaction state. */
   status?: PiInteractionStatus;
-  /** Failure reason for an incomplete Pi interaction, when supplied. */
+  /** Failure reason for an incomplete Pi/Codex interaction, when supplied. */
   reason?: string | null;
   submittedPrompt?: string;
   effectivePrompt?: string | null;
@@ -103,7 +103,8 @@ function listResults(
     ? legacyResults.filter((result) => matchesResultSearch(result, query)).map(toItem)
     : legacyResults.map(toItem);
   const piItems = (scope === "archived" ? [] : (piStore?.list() ?? []))
-    .map(toPiItem)
+    .filter(isTerminalInteraction)
+    .map(toInteractionItem)
     .filter((item) => !isSearchQueryActive(query) || matchesInboxSearch(item, query));
   const items =
     scope === "all" ? orderAllItems([...legacyItems, ...piItems]) : [...legacyItems, ...piItems];
@@ -167,7 +168,7 @@ function openResult(
 ): InboxDetail | null {
   const piInteraction = findPiInteraction(piStore, id);
   if (piInteraction !== null) {
-    return toPiDetail(piInteraction);
+    return toInteractionDetail(piInteraction);
   }
 
   const result = store.get(id);
@@ -219,7 +220,9 @@ function copyResult(
 ): Promise<CopyReport> {
   const piInteraction = findPiInteraction(piStore, id);
   if (piInteraction !== null) {
-    return copyPiInteraction(clipboard, piInteraction, field);
+    return isCodexInteraction(piInteraction)
+      ? copyCodexInteraction(clipboard, piInteraction, field)
+      : copyPiInteraction(clipboard, piInteraction, field);
   }
 
   if (field !== undefined) {
@@ -307,11 +310,70 @@ function toPiDetail(interaction: PiInteraction): InboxDetail {
   };
 }
 
+function toCodexItem(interaction: PiInteraction): InboxItem {
+  const previewSource = interaction.finalReport ?? interaction.submittedPrompt;
+  return {
+    id: interaction.interactionId,
+    kind: "codex",
+    status: interaction.status,
+    reason: interaction.reason,
+    submittedPrompt: interaction.submittedPrompt,
+    effectivePrompt: interaction.effectivePrompt,
+    finalReport: interaction.finalReport,
+    agentLabel: "Codex",
+    sessionShortId: shortSessionId(interaction.sessionId),
+    agentSessionKind: "id",
+    agentSessionValue: interaction.sessionId,
+    orchestrationId: null,
+    orchestrationLabel: null,
+    orchestrationRole: null,
+    workspaceLabel: "Codex",
+    herdrSessionLabel: null,
+    paneLabel: "Codex interaction",
+    capturedAtMs: 0,
+    preview: makePreview(previewSource),
+    unread: false,
+    archived: false,
+  };
+}
+
+function toCodexDetail(interaction: PiInteraction): InboxDetail {
+  return {
+    ...toCodexItem(interaction),
+    rawText: "",
+    captureSource: interaction.provenance,
+    requestedLineCount: 0,
+    paneId: "codex",
+  };
+}
+
+function toInteractionItem(interaction: PiInteraction): InboxItem {
+  return isCodexInteraction(interaction) ? toCodexItem(interaction) : toPiItem(interaction);
+}
+
+function toInteractionDetail(interaction: PiInteraction): InboxDetail {
+  return isCodexInteraction(interaction) ? toCodexDetail(interaction) : toPiDetail(interaction);
+}
+
+function isCodexInteraction(interaction: PiInteraction): boolean {
+  return interaction.provenance === "codex-native-hooks";
+}
+
+function isTerminalInteraction(interaction: PiInteraction): boolean {
+  return interaction.status === "completed" || interaction.status === "failed";
+}
+
 function findPiInteraction(
   piStore: PiInteractionSource | undefined,
   id: string,
 ): PiInteraction | null {
-  return piStore?.list().find((interaction) => interaction.interactionId === id) ?? null;
+  return (
+    piStore
+      ?.list()
+      .find(
+        (interaction) => isTerminalInteraction(interaction) && interaction.interactionId === id,
+      ) ?? null
+  );
 }
 
 function copyPiInteraction(
@@ -326,6 +388,25 @@ function copyPiInteraction(
   if (interaction.finalReport === null) {
     return Promise.reject(
       new ClipboardError(`Pi interaction ${interaction.interactionId} has no final report.`, [
+        `interaction ${interaction.interactionId}: final report unavailable`,
+      ]),
+    );
+  }
+  return clipboard.copy(interaction.finalReport);
+}
+
+function copyCodexInteraction(
+  clipboard: ClipboardProvider,
+  interaction: PiInteraction,
+  field: InboxCopyField | undefined,
+): Promise<CopyReport> {
+  const selectedField = field ?? (interaction.finalReport === null ? "prompt" : "finalReport");
+  if (selectedField === "prompt") {
+    return clipboard.copy(interaction.submittedPrompt);
+  }
+  if (interaction.finalReport === null) {
+    return Promise.reject(
+      new ClipboardError(`Codex interaction ${interaction.interactionId} has no final report.`, [
         `interaction ${interaction.interactionId}: final report unavailable`,
       ]),
     );

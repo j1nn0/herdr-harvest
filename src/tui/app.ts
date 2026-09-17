@@ -348,8 +348,8 @@ export function createApp(
         setStatus({
           text: applied
             ? `Archived result ${id}.`
-            : item?.kind === "pi"
-              ? `Pi interaction ${id} cannot be archived.`
+            : isInteractionKind(item?.kind)
+              ? `${interactionKindLabel(item?.kind)} interaction ${id} cannot be archived.`
               : `Result ${id} is already archived.`,
           error: false,
         });
@@ -370,8 +370,8 @@ export function createApp(
         setStatus({
           text: applied
             ? `Restored result ${id}.`
-            : item?.kind === "pi"
-              ? `Pi interaction ${id} cannot be restored.`
+            : isInteractionKind(item?.kind)
+              ? `${interactionKindLabel(item?.kind)} interaction ${id} cannot be restored.`
               : `Result ${id} is already active.`,
           error: false,
         });
@@ -595,13 +595,16 @@ export function createApp(
         );
         return;
       }
-      if (detail.kind === "pi" && input === "p") {
+      if (isInteractionKind(detail.kind) && input === "p") {
         copy(detail.id, copyByteLength(detail, "prompt"), "prompt");
         return;
       }
-      if (detail.kind === "pi" && input === "f") {
+      if (isInteractionKind(detail.kind) && input === "f") {
         if (typeof detail.finalReport !== "string") {
-          setStatus({ text: "This Pi interaction has no final report to copy.", error: true });
+          setStatus({
+            text: `This ${interactionKindLabel(detail.kind)} interaction has no final report to copy.`,
+            error: true,
+          });
         } else {
           copy(detail.id, copyByteLength(detail, "finalReport"), "finalReport");
         }
@@ -613,16 +616,22 @@ export function createApp(
         return;
       }
       if (input === "a" && !detail.archived) {
-        if (detail.kind === "pi") {
-          setStatus({ text: `Pi interaction ${detail.id} cannot be archived.`, error: true });
+        if (isInteractionKind(detail.kind)) {
+          setStatus({
+            text: `${interactionKindLabel(detail.kind)} interaction ${detail.id} cannot be archived.`,
+            error: true,
+          });
           return;
         }
         archive(detail.id, true);
         return;
       }
       if (input === "r" && detail.archived) {
-        if (detail.kind === "pi") {
-          setStatus({ text: `Pi interaction ${detail.id} cannot be restored.`, error: true });
+        if (isInteractionKind(detail.kind)) {
+          setStatus({
+            text: `${interactionKindLabel(detail.kind)} interaction ${detail.id} cannot be restored.`,
+            error: true,
+          });
           return;
         }
         restore(detail.id, true);
@@ -863,10 +872,18 @@ function clampScroll(offset: number, lineCount: number, viewport: number): numbe
 }
 
 function defaultPiCopyField(item: InboxItem): InboxCopyField | undefined {
-  if (item.kind !== "pi") {
+  if (!isInteractionKind(item.kind)) {
     return undefined;
   }
   return typeof item.finalReport === "string" ? "finalReport" : "prompt";
+}
+
+function isInteractionKind(kind: InboxItem["kind"]): boolean {
+  return kind === "pi" || kind === "codex";
+}
+
+function interactionKindLabel(kind: InboxItem["kind"]): "Pi" | "Codex" {
+  return kind === "codex" ? "Codex" : "Pi";
 }
 
 function copyByteLength(
