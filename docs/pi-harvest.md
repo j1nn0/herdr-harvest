@@ -12,68 +12,114 @@ run.
 ## Prerequisites
 
 - Node.js 24 or newer, as required by this repository.
+- Pi **0.85.1**, the only Pi version verified for this integration. Other Pi
+  versions are unverified.
 - A working Pi installation and an already-authorized provider/model.
 - A built or checked-out Harvest tree with dependencies installed.
 - A Harvest state directory. In a Herdr-managed run this is normally supplied
   as `HERDR_PLUGIN_STATE_DIR`; for an explicit local run, set
   `HARVEST_STATE_DIR` to a directory you control.
 
-The observer is loaded explicitly for the Pi process. This procedure does not
-install a global Pi extension, edit global Pi settings, copy credentials, or
-change an existing security hook.
+This is an experimental, local-only integration. It does not edit Pi's global
+configuration, copy credentials, change existing security hooks, or transmit
+data outside the local machine.
 
-The opt-in is per Pi process and per pane/process launch: every new Pi process
-that should collect must receive both `HARVEST_PI_COLLECT=1` and the explicit
-`--extension` flag. Loading the extension in one pane does not affect another
-pane. There is no automatic `herdr-plugin.toml` lifecycle integration. A
-running Pi process does not reload these settings, so restart that process
-after changing the environment or extension arguments.
+## Activate collection
 
-## Enable and run
+Activation has two explicit setup steps. The first installs the observer's
+user-global discovery file set once. The second is a manual environment
+requirement for every shell or launcher that starts a collecting Pi process.
 
-From the Harvest checkout, run Pi with the package-local extension and the
-explicit opt-in:
+### 1. Install the Harvest discovery file set once
+
+From the Harvest checkout, run:
 
 ```bash
-cd /path/to/herdr-harvest
-npm install
-HARVEST_PI_COLLECT=1 \
-  HARVEST_STATE_DIR=/path/to/harvest-state \
-  pi --extension "$PWD/src/pi/observer.ts"
+node src/bin/pi-setup.ts install
+node src/bin/pi-setup.ts status
 ```
 
-The extension is observer-only. After it is loaded, eligible interactions are
-collected automatically; no capture command is needed after each prompt. The
-observer starts a local `src/bin/ingest-pi.ts` process for each terminal
-record. The ingest process writes to `<state directory>/harvest.db`, the same
-database opened by `src/bin/inbox.ts`.
+The command defaults to the current user's home directory. It writes only the
+Harvest-owned discovery file, its relative-import support tree, and its
+ownership manifest under `~/.pi/agent/extensions/`. Hash verification makes a
+repeat install idempotent; an unexpected or modified file is refused rather
+than overwritten. Unrelated Pi extension files are left untouched. This is a
+user-global discovery installation: every Pi process for that user can see the
+file set, regardless of project. It is not a project-scoped auto-install.
 
-Open the existing Inbox through the normal Harvest/Herdr action. Pi rows are
-shown as `Pi · Completed` or `Pi · Failed-incomplete`; pre-existing Harvest
-rows remain `Legacy`. A completed Pi detail has separate `PROMPT` and `FINAL
-REPORT` sections. The detail view's prompt and final-report copy actions copy
-the stored bytes, including whitespace, newlines, and Unicode.
+Do not also pass the in-repository observer with a second `--extension` flag;
+the setup-owned discovery path is the one observer installation.
 
-## Disable and remove
+### 2. Export the opt-in and state directory in the launching shell
 
-To stop future Pi collection, either unset the opt-in or stop passing the
-extension on subsequent Pi invocations:
+In each shell, launcher, or pane environment that should collect, set:
+
+```bash
+export HARVEST_PI_COLLECT=1
+export HARVEST_STATE_DIR="$HOME/.local/state/herdr-harvest"
+```
+
+Alternatively, a Herdr-managed process may provide
+`HERDR_PLUGIN_STATE_DIR`; Harvest uses that state directory when
+`HARVEST_STATE_DIR` is not set. There is no Herdr plugin API that propagates
+these variables into new Pi processes automatically, so this environment step
+must be arranged for each launching shell or pane. The observer itself is
+automatic after both setup steps: start a new Pi process normally, without a
+per-interaction capture command or a per-pane extension flag.
+
+Changes to the environment or discovery files affect new Pi processes only.
+Restart an already-running Pi process after enabling, disabling, or changing
+the setup.
+
+## Open and use the Inbox
+
+Start a new Pi process normally after the two activation steps. Open the
+existing Harvest Inbox through the normal Harvest/Herdr action:
+
+```bash
+herdr plugin action invoke j1nn0.herdr-harvest.open
+```
+
+Eligible interactions are collected automatically. The observer is read-only:
+it does not transform prompts, replace messages, invoke tools, send prompts,
+or trigger retries or compaction. It starts a local `src/bin/ingest-pi.ts`
+process for each terminal record. The ingest process writes to
+`<state directory>/harvest.db`, the same database opened by the Inbox.
+
+Pi rows are shown as `Pi · Completed` or `Pi · Failed-incomplete`; pre-existing
+Harvest rows remain `Legacy`. A completed Pi detail has separate `PROMPT` and
+`FINAL REPORT` sections. In the detail view, `p` copies the exact submitted
+prompt and `f` copies the exact final report. `f` is unavailable when a failed
+interaction has no final report; `y` uses the existing default copy behavior.
+Copies preserve the stored bytes, including whitespace, newlines, and Unicode.
+
+## Disable and uninstall
+
+To stop future collection, unset the opt-in or set it to any value other than
+the exact string `1` in the launching environment:
 
 ```bash
 unset HARVEST_PI_COLLECT
-pi
+# Or: export HARVEST_PI_COLLECT=0
 ```
 
-or invoke Pi without `--extension "$PWD/src/pi/observer.ts"`. The production
-observer becomes a no-op when `HARVEST_PI_COLLECT` is unset or anything other
-than the exact value `1`. `src/bin/ingest-pi.ts` also refuses to write while
-the opt-in is disabled. Existing database rows are not removed by disabling
-collection and remain readable in the Inbox.
+The production observer becomes a no-op when the opt-in is unset, `0`, or
+invalid. `src/bin/ingest-pi.ts` also refuses to write while the opt-in is
+disabled. Restart already-running Pi processes after changing the variable.
+Existing database rows are not removed by disabling collection and remain
+readable in the Inbox.
 
-There is no global installation to undo. Remove the explicit extension flag
-and unset the environment variable wherever the local command is configured.
-Disabling affects future Pi processes only; stop and restart a currently
-running Pi process to apply the change. Existing rows are never deleted.
+To remove the user-global Harvest discovery file set as well, run:
+
+```bash
+node src/bin/pi-setup.ts uninstall
+node src/bin/pi-setup.ts status
+```
+
+Uninstall removes only files whose ownership hashes still match and refuses a
+modified or foreign file. It leaves unrelated Pi extensions and all existing
+Harvest rows untouched. Restart Pi processes after uninstalling. For state
+backup and migration guidance, see [Upgrade an existing Harvest state safely](#upgrade-an-existing-harvest-state-safely).
 
 ## Upgrade an existing Harvest state safely
 
@@ -152,9 +198,9 @@ These cases produce a truthful failed-incomplete diagnostic or no emitted
 interaction when there is no attributable segment. The observer does not parse
 transcripts or terminal output, guess from silence, summarize with a model, or
 turn an intermediate message into a final report. Herdr-mediated submissions
-were verified when their Pi processes were launched with the same explicit
-opt-in and extension. This does not add automatic Herdr plugin lifecycle
-support; the per-process/per-pane setup above still applies.
+were verified through the production path with the observer loaded and the
+same explicit opt-in. This does not add automatic Herdr plugin lifecycle
+support; the per-process/per-pane environment step above still applies.
 
 ## Privacy and failure behavior
 
@@ -164,12 +210,35 @@ Tool input/output, terminal text, transcripts, status bars, token counts,
 intermediate messages, credentials, and reasoning traces are not product data
 and are not persisted. The state directory is created with mode `0700` and
 database files with mode `0600` where the platform permits. Ingest stdout and
-diagnostics contain metadata only, never prompt or report bodies.
+diagnostics contain metadata only, never prompt or report bodies. The
+user-global discovery file is visible to every Pi process for that user, but
+the exact opt-in gate keeps collection disabled for processes that do not
+inherit `HARVEST_PI_COLLECT=1`.
 
 Collection and ingest failures are fail-open to Pi: the agent session is not
 blocked or modified. The failure is retained as a collector diagnostic when
 possible. Duplicate terminal delivery is idempotent; conflicting content for
 one interaction identity is rejected without overwriting the existing row.
+
+## Known limitations
+
+- There is no fully automatic environment propagation from Harvest or Herdr to
+  Pi. Each shell, launcher, or pane that starts a collecting Pi process must
+  provide the opt-in and state directory, and a running process must be
+  restarted after changes.
+- Setup is user-global rather than project-scoped. There is no project-local
+  automatic install, and no Herdr plugin lifecycle hook installs or removes
+  the Pi discovery file for you.
+- Pi **0.85.1** and macOS are the verified combination. Other Pi versions and
+  Linux/Windows runtime behavior are unverified.
+- Group-toggle and page-key behavior were covered by unit tests; the live TUI
+  driver could not inject those keys. System-clipboard delivery was not
+  exercised; only the exact OSC 52 payload path was verified.
+- A syntactically broken discovery file makes Pi refuse to start (verified:
+  Pi exits non-zero before running the prompt and writes no Harvest row).
+  Setup writes atomically and hash-verifies, so reinstall with
+  `pi-setup.ts install` or remove with `uninstall` to recover; never
+  hand-edit the installed copy.
 
 ## Tests and verification
 
@@ -177,7 +246,7 @@ Focused production checks:
 
 ```bash
 node --test tests/config.test.ts tests/pi-opt-in.test.ts \
-  tests/pi-observer.test.ts tests/bin-ingest-pi.test.ts
+  tests/pi-observer.test.ts tests/bin-ingest-pi.test.ts tests/pi-setup.test.ts
 node --test tests/pi-inbox.test.ts tests/pi-observer-ingest.test.ts
 ```
 
@@ -191,8 +260,9 @@ git diff --check
 For a disposable direct E2E run, use a fresh `0700` state directory and an
 isolated Pi session directory. For the tool case, create a harmless local
 `TOOL_E2E_INPUT.txt` containing no private data and enable only the read tool.
-Load exactly this extension with
-`HARVEST_PI_COLLECT=1`, submit these short synthetic prompts, and do not print
+With the one-time discovery setup installed and the two activation environment
+variables present, start Pi normally; do not supply a second observer
+`--extension` path. Submit these short synthetic prompts and do not print
 their bodies or the model responses:
 
 ```text

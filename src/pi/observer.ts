@@ -51,6 +51,31 @@ export function installProductionPiCollectorExtension(
 
 const DEFAULT_PROVENANCE = "pi-observer-agent_settled";
 
+const INSTALLATION_ENV_KEYS = [
+  "HARVEST_PI_COLLECT",
+  "HARVEST_STATE_DIR",
+  "HERDR_PLUGIN_STATE_DIR",
+  "HARVEST_PI_DIAGNOSTICS_PATH",
+] as const;
+
+interface InstallationIdentity {
+  provenance: string;
+  interactionId?: () => string;
+  writeInteraction?: PiInteractionWriter;
+  diagnostic?: (entry: PiCollectorDiagnostic) => Promise<void> | void;
+  ingestScriptPath?: string;
+  environment: string;
+}
+
+const activeInstallations = new WeakMap<object, InstallationIdentity>();
+
+export class PiCollectorInstallationConflictError extends Error {
+  constructor() {
+    super("A Pi collector is already installed with a different configuration.");
+    this.name = "PiCollectorInstallationConflictError";
+  }
+}
+
 /**
  * Register the observer-only Pi extension. Every handler returns undefined:
  * it never transforms input, replaces messages, sends prompts, or registers
@@ -63,6 +88,17 @@ export function installPiCollectorExtension(
   if (pi === null || typeof pi !== "object" || typeof pi.on !== "function") {
     return undefined;
   }
+
+  const owner = pi as object;
+  const identity = createInstallationIdentity(options);
+  const existing = activeInstallations.get(owner);
+  if (existing !== undefined) {
+    if (sameInstallation(existing, identity)) {
+      return undefined;
+    }
+    throw new PiCollectorInstallationConflictError();
+  }
+  activeInstallations.set(owner, identity);
 
   const provenance = options.provenance ?? DEFAULT_PROVENANCE;
   const makeInteractionId = options.interactionId ?? randomUUID;
@@ -101,147 +137,153 @@ export function installPiCollectorExtension(
     };
   };
 
-  pi.on(
-    "input",
-    safe("input", async (event, context) => {
-      const sessionId = sessionScopeId(context);
-      if (sessionId === undefined) {
-        await report({ code: "missing-session-identity", stage: "input" });
-        return;
-      }
-      const input = inputEvent(event);
-      if (input === undefined) {
-        await report({ code: "malformed-input", stage: "input", sessionId });
-        return;
-      }
-      await accept({
-        kind: "inputObserved",
-        sessionId,
-        sequence: nextSequence(),
-        submittedPrompt: input.text,
-        mode: input.mode,
-        handled: input.handled,
-      });
-    }),
-  );
-
-  pi.on(
-    "before_agent_start",
-    safe("before-agent-start", async (event, context) => {
-      const sessionId = sessionScopeId(context);
-      if (sessionId === undefined) {
-        await report({ code: "missing-session-identity", stage: "before-agent-start" });
-        return;
-      }
-      const before = beforeAgentStartEvent(event);
-      if (before === undefined) {
-        await report({
-          code: "malformed-before-agent-start",
-          stage: "before-agent-start",
+  try {
+    pi.on(
+      "input",
+      safe("input", async (event, context) => {
+        const sessionId = sessionScopeId(context);
+        if (sessionId === undefined) {
+          await report({ code: "missing-session-identity", stage: "input" });
+          return;
+        }
+        const input = inputEvent(event);
+        if (input === undefined) {
+          await report({ code: "malformed-input", stage: "input", sessionId });
+          return;
+        }
+        await accept({
+          kind: "inputObserved",
           sessionId,
+          sequence: nextSequence(),
+          submittedPrompt: input.text,
+          mode: input.mode,
+          handled: input.handled,
         });
-        return;
-      }
-      await accept({
-        kind: "promptObserved",
-        sessionId,
-        sequence: nextSequence(),
-        interactionId: makeInteractionId(),
-        effectivePrompt: before.prompt,
-        ...(before.mode === undefined ? {} : { mode: before.mode }),
-        hasAttachments: before.hasAttachments,
-      });
-    }),
-  );
+      }),
+    );
 
-  pi.on(
-    "message_end",
-    safe("message-end", async (event, context) => {
-      const sessionId = sessionScopeId(context);
-      if (sessionId === undefined) {
-        await report({ code: "missing-session-identity", stage: "message-end" });
-        return;
-      }
-      const message = messageEndEvent(event);
-      if (message === undefined) {
-        await report({ code: "malformed-message-end", stage: "message-end", sessionId });
-        return;
-      }
-      const active = state.interactions.filter(
-        (interaction) => interaction.sessionId === sessionId && interaction.status === "pending",
-      );
-      if (active.length !== 1) {
-        await report({
-          code: active.length === 0 ? "unpaired-candidate" : "ambiguous-candidate",
-          stage: "message-end",
+    pi.on(
+      "before_agent_start",
+      safe("before-agent-start", async (event, context) => {
+        const sessionId = sessionScopeId(context);
+        if (sessionId === undefined) {
+          await report({ code: "missing-session-identity", stage: "before-agent-start" });
+          return;
+        }
+        const before = beforeAgentStartEvent(event);
+        if (before === undefined) {
+          await report({
+            code: "malformed-before-agent-start",
+            stage: "before-agent-start",
+            sessionId,
+          });
+          return;
+        }
+        await accept({
+          kind: "promptObserved",
           sessionId,
+          sequence: nextSequence(),
+          interactionId: makeInteractionId(),
+          effectivePrompt: before.prompt,
+          ...(before.mode === undefined ? {} : { mode: before.mode }),
+          hasAttachments: before.hasAttachments,
         });
-        return;
-      }
-      await accept({
-        kind: "assistantCandidate",
-        sessionId,
-        sequence: nextSequence(),
-        ...(message.id === undefined ? {} : { eventId: `message:${message.id}` }),
-        interactionId: active[0]?.interactionId ?? "",
-        role: message.role,
-        stopReason: message.stopReason,
-        textBlocks: message.textBlocks,
-      });
-    }),
-  );
+      }),
+    );
 
-  pi.on(
-    "agent_settled",
-    safe("agent-settled", async (_event, context) => {
-      if (typeof context.isIdle !== "function" || context.isIdle() !== true) {
-        return;
-      }
-      const sessionId = sessionScopeId(context);
-      if (sessionId === undefined) {
-        await report({ code: "missing-session-identity", stage: "agent-settled" });
-        return;
-      }
-      const interactionIds = state.interactions
-        .filter(
+    pi.on(
+      "message_end",
+      safe("message-end", async (event, context) => {
+        const sessionId = sessionScopeId(context);
+        if (sessionId === undefined) {
+          await report({ code: "missing-session-identity", stage: "message-end" });
+          return;
+        }
+        const message = messageEndEvent(event);
+        if (message === undefined) {
+          await report({ code: "malformed-message-end", stage: "message-end", sessionId });
+          return;
+        }
+        const active = state.interactions.filter(
           (interaction) => interaction.sessionId === sessionId && interaction.status === "pending",
-        )
-        .map((interaction) => interaction.interactionId);
-      if (interactionIds.length === 0) {
-        return;
-      }
-      await accept({
-        kind: "settled",
-        sessionId,
-        sequence: nextSequence(),
-        interactionIds,
-        outcome: "success",
-      });
-    }),
-  );
+        );
+        if (active.length !== 1) {
+          await report({
+            code: active.length === 0 ? "unpaired-candidate" : "ambiguous-candidate",
+            stage: "message-end",
+            sessionId,
+          });
+          return;
+        }
+        await accept({
+          kind: "assistantCandidate",
+          sessionId,
+          sequence: nextSequence(),
+          ...(message.id === undefined ? {} : { eventId: `message:${message.id}` }),
+          interactionId: active[0]?.interactionId ?? "",
+          role: message.role,
+          stopReason: message.stopReason,
+          textBlocks: message.textBlocks,
+        });
+      }),
+    );
 
-  pi.on(
-    "session_shutdown",
-    safe("session-shutdown", async (_event, context) => {
-      const sessionId = sessionScopeId(context);
-      if (sessionId === undefined) {
-        await report({ code: "missing-session-identity", stage: "session-shutdown" });
-        return;
-      }
-      const hasPending = state.interactions.some(
-        (interaction) => interaction.sessionId === sessionId && interaction.status === "pending",
-      );
-      if (!hasPending) {
-        return;
-      }
-      await accept({
-        kind: "sessionEnded",
-        sessionId,
-        sequence: nextSequence(),
-        reason: "session-ended",
-      });
-    }),
-  );
+    pi.on(
+      "agent_settled",
+      safe("agent-settled", async (_event, context) => {
+        if (typeof context.isIdle !== "function" || context.isIdle() !== true) {
+          return;
+        }
+        const sessionId = sessionScopeId(context);
+        if (sessionId === undefined) {
+          await report({ code: "missing-session-identity", stage: "agent-settled" });
+          return;
+        }
+        const interactionIds = state.interactions
+          .filter(
+            (interaction) =>
+              interaction.sessionId === sessionId && interaction.status === "pending",
+          )
+          .map((interaction) => interaction.interactionId);
+        if (interactionIds.length === 0) {
+          return;
+        }
+        await accept({
+          kind: "settled",
+          sessionId,
+          sequence: nextSequence(),
+          interactionIds,
+          outcome: "success",
+        });
+      }),
+    );
+
+    pi.on(
+      "session_shutdown",
+      safe("session-shutdown", async (_event, context) => {
+        const sessionId = sessionScopeId(context);
+        if (sessionId === undefined) {
+          await report({ code: "missing-session-identity", stage: "session-shutdown" });
+          return;
+        }
+        const hasPending = state.interactions.some(
+          (interaction) => interaction.sessionId === sessionId && interaction.status === "pending",
+        );
+        if (!hasPending) {
+          return;
+        }
+        await accept({
+          kind: "sessionEnded",
+          sessionId,
+          sequence: nextSequence(),
+          reason: "session-ended",
+        });
+      }),
+    );
+  } catch (error) {
+    activeInstallations.delete(owner);
+    throw error;
+  }
 
   async function accept(event: PiContractEvent): Promise<void> {
     const result = applyPiContractEvent(state, event);
@@ -313,6 +355,33 @@ export function installPiCollectorExtension(
   }
 
   return undefined;
+}
+
+function createInstallationIdentity(options: PiCollectorOptions): InstallationIdentity {
+  const environment = options.env ?? process.env;
+  return {
+    provenance: options.provenance ?? DEFAULT_PROVENANCE,
+    ...(options.interactionId === undefined ? {} : { interactionId: options.interactionId }),
+    ...(options.writeInteraction === undefined
+      ? {}
+      : { writeInteraction: options.writeInteraction }),
+    ...(options.diagnostic === undefined ? {} : { diagnostic: options.diagnostic }),
+    ...(options.ingestScriptPath === undefined
+      ? {}
+      : { ingestScriptPath: options.ingestScriptPath }),
+    environment: JSON.stringify(INSTALLATION_ENV_KEYS.map((key) => [key, environment[key]])),
+  };
+}
+
+function sameInstallation(left: InstallationIdentity, right: InstallationIdentity): boolean {
+  return (
+    left.provenance === right.provenance &&
+    left.interactionId === right.interactionId &&
+    left.writeInteraction === right.writeInteraction &&
+    left.diagnostic === right.diagnostic &&
+    left.ingestScriptPath === right.ingestScriptPath &&
+    left.environment === right.environment
+  );
 }
 
 /** Factory form used by Pi's extension loader and deterministic tests. */

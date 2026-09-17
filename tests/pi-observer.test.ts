@@ -5,7 +5,9 @@ import type { PiInteractionInput } from "../src/domain/pi-interaction.ts";
 import { MAX_PI_FINAL_REPORT_BYTES, MAX_PI_PROMPT_BYTES } from "../src/domain/pi-interaction.ts";
 import {
   createPiCollectorExtension,
+  installPiCollectorExtension,
   type PiCollectorDiagnostic,
+  type PiExtensionApi,
   type PiExtensionContext,
   sessionScopeId,
 } from "../src/pi/observer.ts";
@@ -498,6 +500,8 @@ describe("Pi observer extension", () => {
 
   test("never lets a writer or diagnostics failure escape into Pi", async () => {
     const diagnostics: PiCollectorDiagnostic[] = [];
+    const privatePrompt = "private prompt that must not enter diagnostics";
+    const privateReport = "private report that must not enter diagnostics";
     const pi = fakePi();
     createPiCollectorExtension({
       provenance: "test-observer",
@@ -513,9 +517,77 @@ describe("Pi observer extension", () => {
     const context = makeContext("session-fail-open", "/sessions/fail-open.json");
 
     await assert.doesNotReject(async () => {
-      await emitComplete(pi, context, "safe prompt", "safe report");
+      await emitComplete(pi, context, privatePrompt, privateReport);
     });
     assert.ok(diagnostics.some((entry) => entry.code === "store-write"));
+    const serializedDiagnostics = JSON.stringify(diagnostics);
+    assert.equal(serializedDiagnostics.includes(privatePrompt), false);
+    assert.equal(serializedDiagnostics.includes(privateReport), false);
+  });
+
+  test("contains observer handler exceptions and keeps the turn fail-open", async () => {
+    const diagnostics: PiCollectorDiagnostic[] = [];
+    const pi = fakePi();
+    createPiCollectorExtension({
+      provenance: "handler-fail-open-test",
+      diagnostic: async (entry) => {
+        diagnostics.push(entry);
+      },
+    })(pi);
+    const context = {
+      isIdle() {
+        throw new Error("simulated Pi context failure");
+      },
+      sessionManager: {
+        getSessionId: () => "session-handler-fail-open",
+        getSessionFile: () => "/sessions/handler-fail-open.json",
+      },
+    };
+
+    await assert.doesNotReject(async () => {
+      await pi.emit("agent_settled", { type: "agent_settled" }, context);
+    });
+    assert.ok(hasDiagnostic(diagnostics, "agent-settled"));
+    assert.equal(JSON.stringify(diagnostics).includes("simulated Pi context failure"), false);
+  });
+
+  test("does not register duplicate handlers for an equivalent installation", () => {
+    const pi = countingPi();
+    const writer = async (_record: PiInteractionInput): Promise<void> => undefined;
+    const diagnostic = async (_entry: PiCollectorDiagnostic): Promise<void> => undefined;
+    const options = {
+      provenance: "duplicate-install-test",
+      interactionId: () => "duplicate-install-id",
+      writeInteraction: writer,
+      diagnostic,
+    };
+
+    installPiCollectorExtension(pi, options);
+    installPiCollectorExtension(pi, { ...options });
+
+    assert.equal(pi.registrations.length, 5);
+  });
+
+  test("rejects a differently configured second installation without stacking handlers", () => {
+    const pi = countingPi();
+    const options = {
+      provenance: "conflicting-install-test",
+      interactionId: () => "conflicting-install-id",
+      writeInteraction: async (_record: PiInteractionInput): Promise<void> => undefined,
+      diagnostic: async (_entry: PiCollectorDiagnostic): Promise<void> => undefined,
+    };
+
+    installPiCollectorExtension(pi, options);
+
+    assert.throws(
+      () =>
+        installPiCollectorExtension(pi, {
+          ...options,
+          provenance: "different-provenance",
+        }),
+      /already installed with a different configuration/,
+    );
+    assert.equal(pi.registrations.length, 5);
   });
 });
 
@@ -555,6 +627,16 @@ function fakePi() {
         return undefined;
       }
       return handler(payload, context);
+    },
+  };
+}
+
+function countingPi(): PiExtensionApi & { registrations: string[] } {
+  const registrations: string[] = [];
+  return {
+    registrations,
+    on(event: string, _handler: (event: unknown, context: PiExtensionContext) => unknown) {
+      registrations.push(event);
     },
   };
 }

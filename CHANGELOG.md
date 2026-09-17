@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-17
+
+### Added
+
+- Added an opt-in experimental Pi collector that preserves the submitted
+  prompt and terminal final report as separate Inbox fields with per-field
+  copy actions, while keeping legacy Harvest snapshots separate.
+- Added one-time Pi discovery setup through `node src/bin/pi-setup.ts
+  install`; collecting processes require `HARVEST_PI_COLLECT=1` and a state
+  directory in their launching environment.
+
 ## [0.7.0] - 2026-09-16
 
 ### Added
@@ -97,7 +108,8 @@ First public release.
 - A completion inferred only from `blocked → idle` is not captured, because that transition can equally mean an approval prompt was cancelled.
 - Archived results stay in the database but cannot yet be browsed or restored from the inbox.
 
-[Unreleased]: https://github.com/j1nn0/herdr-harvest/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/j1nn0/herdr-harvest/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/j1nn0/herdr-harvest/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/j1nn0/herdr-harvest/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/j1nn0/herdr-harvest/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/j1nn0/herdr-harvest/compare/v0.4.2...v0.5.0

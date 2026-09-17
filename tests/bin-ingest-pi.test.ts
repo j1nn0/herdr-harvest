@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, test } from "node:test";
@@ -133,6 +133,45 @@ describe("ingest-pi entrypoint", () => {
     );
     assert.equal(oversizedReport.code, 2);
     assert.equal(await exists(join(oversizedReportDirectory, "harvest.db")), false);
+  });
+
+  test("does not echo prompt or report bodies on input or store failure", async () => {
+    const privatePrompt = "private prompt body that must not be echoed";
+    const privateReport = "private report body that must not be echoed";
+    const rejectedDirectory = await temporaryDirectory();
+    const rejected = await runIngest(
+      rejectedDirectory,
+      JSON.stringify({
+        ...terminalInput(),
+        submittedPrompt: privatePrompt,
+        finalReport: privateReport,
+        status: "pending",
+      }),
+    );
+
+    assert.equal(rejected.code, 2);
+    assert.equal(rejected.stdout.includes(privatePrompt), false);
+    assert.equal(rejected.stdout.includes(privateReport), false);
+    assert.equal(rejected.stderr.includes(privatePrompt), false);
+    assert.equal(rejected.stderr.includes(privateReport), false);
+
+    const stateDirectory = await temporaryDirectory();
+    const stateFile = join(stateDirectory, "state-file");
+    await writeFile(stateFile, "not a directory", "utf8");
+    const failedStore = await runIngest(
+      stateFile,
+      JSON.stringify({
+        ...terminalInput(),
+        submittedPrompt: privatePrompt,
+        finalReport: privateReport,
+      }),
+    );
+
+    assert.equal(failedStore.code, 1);
+    assert.equal(failedStore.stdout.includes(privatePrompt), false);
+    assert.equal(failedStore.stdout.includes(privateReport), false);
+    assert.equal(failedStore.stderr.includes(privatePrompt), false);
+    assert.equal(failedStore.stderr.includes(privateReport), false);
   });
 });
 
