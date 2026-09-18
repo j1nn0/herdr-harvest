@@ -26,6 +26,7 @@ export const CODEX_COLLECTOR_SOURCE_FILES = [
   "src/persistence/database.ts",
   "src/persistence/migrations.ts",
   "src/persistence/pi-interaction-store.ts",
+  "src/runtime/is-main-module.ts",
   "src/bin/ingest-codex.ts",
 ] as const;
 

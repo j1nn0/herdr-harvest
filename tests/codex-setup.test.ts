@@ -355,6 +355,69 @@ test("status reports pending Codex count without changing setup state", () => {
   assert.equal(statusCodexCollector({ homeDir: value.home }, 2).pendingCodexTurns, 2);
 });
 
+test("installs a self-contained support tree and runs the installed submit hook", () => {
+  const home = fixture();
+  const paths = getCodexSetupPaths(home);
+  installCodexCollector({ homeDir: home });
+
+  for (const relativePath of CODEX_COLLECTOR_SOURCE_FILES) {
+    const installedPath = join(paths.supportDirectory, relativePath);
+    assert.equal(existsSync(installedPath), true, relativePath);
+    const source = readFileSync(installedPath, "utf8");
+    for (const specifier of relativeImportSpecifiers(source)) {
+      const importedPath = join(installedPath, "..", specifier);
+      assert.equal(
+        existsSync(importedPath),
+        true,
+        `${relativePath} has no installed target for ${specifier}`,
+      );
+    }
+  }
+
+  const stateDirectory = join(home, "state");
+  mkdirSync(stateDirectory, { recursive: true });
+  const sessionId = "installed-submit-session";
+  const turnId = "installed-submit-turn";
+  const submittedPrompt = "  installed prompt\n二行目🚀  ";
+  const result = spawnSync(
+    process.execPath,
+    [join(paths.supportDirectory, "src", "codex", "submit-hook.ts")],
+    {
+      cwd: repositoryRoot,
+      env: {
+        ...process.env,
+        HOME: home,
+        HARVEST_CODEX_COLLECT: "1",
+        HARVEST_STATE_DIR: stateDirectory,
+      },
+      input: JSON.stringify({
+        hook_event_name: "UserPromptSubmit",
+        session_id: sessionId,
+        turn_id: turnId,
+        prompt: submittedPrompt,
+      }),
+      encoding: "utf8",
+    },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "");
+  assert.equal(result.stderr, "");
+
+  const db = openDatabase(join(stateDirectory, "harvest.db"));
+  try {
+    const store = new PiInteractionStore(db);
+    const interaction = store.get(sessionId, codexInteractionId(sessionId, turnId));
+    assert.ok(interaction);
+    assert.equal(interaction.status, "pending");
+    assert.equal(interaction.submittedPrompt, submittedPrompt);
+    assert.equal(interaction.finalReport, null);
+    assert.equal(interaction.provenance, CODEX_NATIVE_HOOKS_PROVENANCE);
+  } finally {
+    db.close();
+  }
+});
+
 function fixture(): string {
   const base = mkdtempSync(join(tmpdir(), "herdr-harvest-codex-setup-"));
   temporaryDirectories.push(base);
@@ -482,4 +545,16 @@ function runCodexSetupProcess(args: readonly string[], value: PruneFixture) {
     env,
     encoding: "utf8",
   });
+}
+
+function relativeImportSpecifiers(source: string): string[] {
+  const specifiers: string[] = [];
+  const pattern = /\bfrom\s+["'](\.{1,2}\/[^"']+)["']/g;
+  for (const match of source.matchAll(pattern)) {
+    const specifier = match[1];
+    if (specifier !== undefined) {
+      specifiers.push(specifier);
+    }
+  }
+  return specifiers;
 }
