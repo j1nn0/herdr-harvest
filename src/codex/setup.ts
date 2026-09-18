@@ -485,6 +485,7 @@ interface HookSpec {
   event: CodexHookEvent;
   command: string;
   group: HookGroup;
+  legacyCommand: string;
 }
 
 interface HookGroup {
@@ -547,10 +548,12 @@ function plannedFile(relativePath: string, targetPath: string, content: Buffer):
 function expectedHookGroups(paths: CodexSetupPaths): HookSpec[] {
   return CODEX_HOOK_EVENTS.map((event) => {
     const file = event === "UserPromptSubmit" ? "submit-hook.ts" : "stop-hook.ts";
-    const command = `node --experimental-strip-types ${shellQuote(join(paths.supportDirectory, "src", "codex", file))}`;
+    const hookPath = join(paths.supportDirectory, "src", "codex", file);
+    const command = `node --experimental-strip-types ${shellQuote(hookPath)}`;
     return {
       event,
       command,
+      legacyCommand: `node --experimental-strip-types ${posixShellQuote(hookPath)}`,
       group: {
         hooks: [{ type: "command", command, timeout: HOOK_TIMEOUT_SECONDS }],
       },
@@ -792,8 +795,10 @@ function inspectHookGroup(hooksObject: JsonObjectNode, spec: HookSpec, path = ""
 
   const exactIndices: number[] = [];
   let hasModifiedCommand = false;
+  let hasLegacyCommand = false;
   for (const [index, element] of eventProperty.value.elements.entries()) {
     if (!hasCommand(element.value, spec.command)) {
+      hasLegacyCommand ||= hasCommand(element.value, spec.legacyCommand);
       continue;
     }
     if (deepEqualJson(element.value, spec.group)) {
@@ -802,7 +807,11 @@ function inspectHookGroup(hooksObject: JsonObjectNode, spec: HookSpec, path = ""
       hasModifiedCommand = true;
     }
   }
-  if (hasModifiedCommand || exactIndices.length !== (exactIndices.length === 0 ? 0 : 1)) {
+  if (
+    hasModifiedCommand ||
+    hasLegacyCommand ||
+    exactIndices.length !== (exactIndices.length === 0 ? 0 : 1)
+  ) {
     return {
       event: spec.event,
       status: "stale",
@@ -1651,11 +1660,43 @@ function resolveRequiredPath(value: string, label: string): string {
   return resolve(value);
 }
 
-function shellQuote(value: string): string {
+export function shellQuote(value: string, platform: string = process.platform): string {
+  if (platform === "win32") {
+    return windowsShellQuote(value);
+  }
+  return posixShellQuote(value);
+}
+
+function posixShellQuote(value: string): string {
   if (/^[A-Za-z0-9_./-]+$/.test(value)) {
     return value;
   }
   return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
+function windowsShellQuote(value: string): string {
+  if (/^[A-Za-z0-9_./\\:-]+$/.test(value)) {
+    return value;
+  }
+  let quoted = '"';
+  let backslashes = 0;
+  for (const character of value) {
+    if (character === "\\") {
+      backslashes += 1;
+      continue;
+    }
+    if (character === '"') {
+      quoted += "\\".repeat(backslashes * 2 + 1);
+      quoted += '"';
+      backslashes = 0;
+      continue;
+    }
+    quoted += "\\".repeat(backslashes);
+    quoted += character;
+    backslashes = 0;
+  }
+  quoted += "\\".repeat(backslashes * 2);
+  return `${quoted}"`;
 }
 
 function sha256(value: string | Buffer): string {

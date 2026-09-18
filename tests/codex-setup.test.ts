@@ -16,6 +16,7 @@ import {
   CodexSetupValidationError,
   getCodexSetupPaths,
   installCodexCollector,
+  shellQuote,
   statusCodexCollector,
   uninstallCodexCollector,
 } from "../src/codex/setup.ts";
@@ -355,6 +356,45 @@ test("status reports pending Codex count without changing setup state", () => {
   assert.equal(statusCodexCollector({ homeDir: value.home }, 2).pendingCodexTurns, 2);
 });
 
+test("uses the production hook command quoting on the current platform", () => {
+  const base = fixture();
+  const home = join(base, "home with spaces");
+  mkdirSync(home, { recursive: true });
+  const paths = getCodexSetupPaths(home);
+
+  installCodexCollector({ homeDir: home });
+  const hooks = JSON.parse(readFileSync(paths.hooksPath, "utf8")) as {
+    hooks: Record<string, unknown>;
+  };
+
+  assert.deepEqual(hooks.hooks.UserPromptSubmit, [
+    expectedGroup(hookCommand(paths, "submit-hook.ts")),
+  ]);
+  assert.deepEqual(hooks.hooks.Stop, [expectedGroup(hookCommand(paths, "stop-hook.ts"))]);
+});
+
+test("quotes hook paths according to the target platform", () => {
+  assert.equal(shellQuote("/tmp/hook.ts", "darwin"), "/tmp/hook.ts");
+  assert.equal(shellQuote("/tmp/hook path.ts", "darwin"), "'/tmp/hook path.ts'");
+  assert.equal(shellQuote("it's", "darwin"), `'it'"'"'s'`);
+  assert.equal(shellQuote("", "darwin"), "''");
+
+  assert.equal(shellQuote(String.raw`C:\plain\hook.ts`, "win32"), String.raw`C:\plain\hook.ts`);
+  assert.equal(
+    shellQuote(String.raw`C:\Program Files\hook.ts`, "win32"),
+    String.raw`"C:\Program Files\hook.ts"`,
+  );
+  assert.equal(
+    shellQuote(String.raw`C:\Program Files\weird"hook.ts`, "win32"),
+    String.raw`"C:\Program Files\weird\"hook.ts"`,
+  );
+  assert.equal(shellQuote("", "win32"), '""');
+  assert.equal(
+    shellQuote("C:\\Program Files\\hook.ts\\", "win32"),
+    '"C:\\Program Files\\hook.ts\\\\"',
+  );
+});
+
 test("installs a self-contained support tree and runs the installed submit hook", () => {
   const home = fixture();
   const paths = getCodexSetupPaths(home);
@@ -427,7 +467,7 @@ function fixture(): string {
 }
 
 function hookCommand(paths: CodexSetupPaths, file: "submit-hook.ts" | "stop-hook.ts"): string {
-  return `node --experimental-strip-types ${join(paths.supportDirectory, "src", "codex", file)}`;
+  return `node --experimental-strip-types ${shellQuote(join(paths.supportDirectory, "src", "codex", file))}`;
 }
 
 function expectedGroup(command: string): object {
