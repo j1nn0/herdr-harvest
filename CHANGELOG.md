@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-09-18
+
+### Fixed
+
+- Fixed the installed Pi support tree missing its runtime helper.
+- Fixed Pi setup failures when upgrading from older support manifests.
+- Corrected state-directory guidance to use the authoritative Herdr plugin
+  state directory when available and avoid unrelated global Harvest exports.
+
+### Compatibility
+
+- No SQLite migration is included; schema version 5 is retained.
+- Existing Pi, Codex, and Legacy data is preserved.
+- No breaking configuration change is introduced.
+- Documentation guidance changed, but no database is migrated or deleted
+  automatically.
+
 ## [0.9.0] - 2026-09-18
 
 ### Added
@@ -150,7 +167,8 @@ First public release.
 - A completion inferred only from `blocked → idle` is not captured, because that transition can equally mean an approval prompt was cancelled.
 - Archived results stay in the database but cannot yet be browsed or restored from the inbox.
 
-[Unreleased]: https://github.com/j1nn0/herdr-harvest/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/j1nn0/herdr-harvest/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/j1nn0/herdr-harvest/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/j1nn0/herdr-harvest/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/j1nn0/herdr-harvest/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/j1nn0/herdr-harvest/compare/v0.6.0...v0.7.0

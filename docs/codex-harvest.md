@@ -65,19 +65,40 @@ that their status is trusted before collecting.
 
 ### 2. Export the opt-in and state directory in the launching environment
 
-In each shell, launcher, or pane environment that should collect, set:
+In each shell, launcher, or pane environment that should collect, enable the
+opt-in:
 
 ```bash
 export HARVEST_CODEX_COLLECT=1
-export HARVEST_STATE_DIR="$HOME/.local/state/herdr-harvest"
 ```
 
-Alternatively, set `HERDR_PLUGIN_STATE_DIR`; `HARVEST_STATE_DIR` takes
-precedence when both are set. The exact opt-in value is `1`. A new Codex pane
-or standalone Codex process automatically sees the user-level hook setup after
-this one-time installation and environment setup; there is no per-pane hook
-configuration or forwarding step. The environment still has to be present in
-the launcher that starts the process.
+Use the authoritative plugin state directory reported by the installed Herdr
+environment:
+
+```bash
+herdr plugin config-dir j1nn0.herdr-harvest
+```
+
+When the launcher provides `HERDR_PLUGIN_STATE_DIR`, use that value instead.
+The Harvest plugin, Pi observer, Codex hooks, and Inbox must all resolve to
+this same state directory. Do not globally export an unrelated
+`HARVEST_STATE_DIR`. Set `HARVEST_STATE_DIR` explicitly only in a launcher
+that does not provide `HERDR_PLUGIN_STATE_DIR`:
+
+```bash
+export HARVEST_STATE_DIR="$(herdr plugin config-dir j1nn0.herdr-harvest)"
+```
+
+`HARVEST_STATE_DIR` takes precedence when both variables are set. The exact
+opt-in value is `1`. A new Codex pane or standalone Codex process sees the
+user-level hook setup after this one-time installation; there is no per-pane
+hook configuration or forwarding step. Ensure the launcher provides the
+opt-in and state directory for each process; Herdr does not guarantee that
+`HERDR_PLUGIN_STATE_DIR` is propagated into every pane.
+
+If two state directories already contain databases, back up and reconcile the
+data before changing the path. Do not delete the old database; Harvest does
+not migrate or delete databases automatically.
 
 Changes to hooks, trust, notify configuration, or the environment affect new
 Codex processes only. Restart already-running Codex processes after enabling,
