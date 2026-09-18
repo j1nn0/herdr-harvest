@@ -4,6 +4,7 @@ import { createInboxService } from "../src/app/inbox-service.ts";
 import type { ClipboardProvider, CopyReport } from "../src/clipboard/provider.ts";
 import { ClipboardError } from "../src/clipboard/provider.ts";
 import type { OrchestrationClaim } from "../src/domain/orchestration.ts";
+import type { PiInteraction } from "../src/domain/pi-interaction.ts";
 import type { CaptureInput, HarvestResult } from "../src/domain/result.ts";
 import { openDatabase } from "../src/persistence/database.ts";
 import type { ResultStore } from "../src/persistence/result-store.ts";
@@ -43,12 +44,32 @@ function inserted(
   return outcome.result;
 }
 
-function makeService(clipboard: ClipboardProvider = successfulClipboard()) {
+function makeInteraction(overrides: Partial<PiInteraction> = {}): PiInteraction {
+  return {
+    interactionId: "pi-interaction",
+    sessionId: "pi-session",
+    submittedPrompt: "pi prompt needle",
+    effectivePrompt: null,
+    finalReport: "pi report needle",
+    status: "completed",
+    reason: null,
+    provenance: "pi-observer",
+    completedAtMs: 1_000,
+    dedupKey: "pi-dedup",
+    ...overrides,
+  };
+}
+
+function makeService(
+  clipboard: ClipboardProvider = successfulClipboard(),
+  interactions: PiInteraction[] = [],
+) {
   const store = new SqliteResultStore(openDatabase(":memory:"));
   const service = createInboxService({
     store,
     clipboard,
     now: () => 9_000,
+    piStore: interactions.length === 0 ? undefined : { list: () => interactions },
   });
   return { service, store };
 }
@@ -77,6 +98,121 @@ describe("inbox service", () => {
       assert.deepEqual(
         service.list().map((item) => item.id),
         [unreadNew.id, readNew.id, readOld.id],
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  test("orders mixed sources by unread state, known time, and deterministic unknown time", () => {
+    const piItems = [
+      makeInteraction({
+        interactionId: "pi-tie-z",
+        completedAtMs: 600,
+        dedupKey: "pi-tie-z",
+      }),
+      makeInteraction({
+        interactionId: "pi-historical",
+        completedAtMs: null,
+        dedupKey: "pi-historical",
+      }),
+      makeInteraction({
+        interactionId: "codex-recent",
+        completedAtMs: 800,
+        provenance: "codex-native-hooks",
+        dedupKey: "codex-recent",
+      }),
+      makeInteraction({
+        interactionId: "pi-newest",
+        completedAtMs: 1_000,
+        dedupKey: "pi-newest",
+      }),
+      makeInteraction({
+        interactionId: "pi-tie-a",
+        completedAtMs: 600,
+        dedupKey: "pi-tie-a",
+      }),
+      {
+        ...makeInteraction({
+          interactionId: "codex-pending",
+          completedAtMs: null,
+          dedupKey: "codex-pending",
+        }),
+        status: "pending",
+        finalReport: null,
+      } as unknown as PiInteraction,
+    ];
+    const { service, store } = makeService(successfulClipboard(), piItems);
+    try {
+      const legacyUnread = inserted(
+        store,
+        makeInput({ capturedAtMs: 900, rawText: "legacy unread needle" }),
+      );
+      const legacyRead = inserted(
+        store,
+        makeInput({ capturedAtMs: 700, rawText: "legacy read needle" }),
+      );
+      const legacyArchived = inserted(
+        store,
+        makeInput({ capturedAtMs: 50, rawText: "legacy archived needle" }),
+      );
+      store.markRead(legacyRead.id, 2_000);
+      store.archive(legacyArchived.id, 2_001);
+
+      const expectedActive = [
+        legacyUnread.id,
+        "pi-newest",
+        "codex-recent",
+        legacyRead.id,
+        "pi-tie-z",
+        "pi-tie-a",
+        "pi-historical",
+      ];
+      const expectedAll = [
+        "pi-newest",
+        legacyUnread.id,
+        "codex-recent",
+        legacyRead.id,
+        "pi-tie-z",
+        "pi-tie-a",
+        legacyArchived.id,
+        "pi-historical",
+      ];
+
+      assert.deepEqual(
+        service.list().map((item) => item.id),
+        expectedActive,
+      );
+      assert.deepEqual(
+        service.list({ mode: "active", query: "   " }).map((item) => item.id),
+        expectedActive,
+      );
+      assert.deepEqual(
+        service.list({ query: "needle" }).map((item) => item.id),
+        expectedActive,
+      );
+      assert.deepEqual(
+        service.list({ mode: "all", query: "needle" }).map((item) => item.id),
+        expectedAll,
+      );
+      assert.deepEqual(
+        service.list("all").map((item) => item.id),
+        expectedAll,
+      );
+      assert.deepEqual(
+        service.list("archived").map((item) => item.id),
+        [legacyArchived.id],
+      );
+      assert.equal(
+        service.list().some((item) => item.id === "codex-pending"),
+        false,
+      );
+      assert.equal(service.list().find((item) => item.id === "pi-historical")?.capturedAtMs, null);
+      assert.equal(service.list().find((item) => item.id === "pi-newest")?.capturedAtMs, 1_000);
+      assert.equal(new Set(expectedActive).size, expectedActive.length);
+      assert.deepEqual(
+        service.list().map((item) => item.id),
+        expectedActive,
       );
     } finally {
       store.close();

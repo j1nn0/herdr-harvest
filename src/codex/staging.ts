@@ -24,8 +24,9 @@ const MISSING_PROMPT_SENTINEL = "";
 
 /**
  * Codex uses the existing Pi table's pending state as a private staging row.
- * There is intentionally no timestamp sweep here: this schema has no safe
- * timestamp column, so stale rows remain for a later explicit prune command.
+ * There is intentionally no timestamp sweep here: pending rows remain
+ * explicitly staged until notify or a later explicit prune command. Completion
+ * timestamps are assigned only when a terminal row is inserted.
  */
 
 export type CodexStagingOutcome =

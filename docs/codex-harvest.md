@@ -72,22 +72,21 @@ opt-in:
 export HARVEST_CODEX_COLLECT=1
 ```
 
-Use the authoritative plugin state directory reported by the installed Herdr
-environment:
+Inspect the effective state directory in the environment of the process that
+launches the plugin:
 
 ```bash
-herdr plugin config-dir j1nn0.herdr-harvest
+printf '%s\n' "${HARVEST_STATE_DIR:-${HERDR_PLUGIN_STATE_DIR:-<unset>}}"
 ```
 
-When the launcher provides `HERDR_PLUGIN_STATE_DIR`, use that value instead.
-The Harvest plugin, Pi observer, Codex hooks, and Inbox must all resolve to
-this same state directory. Do not globally export an unrelated
-`HARVEST_STATE_DIR`. Set `HARVEST_STATE_DIR` explicitly only in a launcher
-that does not provide `HERDR_PLUGIN_STATE_DIR`:
-
-```bash
-export HARVEST_STATE_DIR="$(herdr plugin config-dir j1nn0.herdr-harvest)"
-```
+This checks `HARVEST_STATE_DIR` first and falls back to
+`HERDR_PLUGIN_STATE_DIR`. The Harvest plugin, Pi observer, Codex hooks, and
+Inbox must all resolve to this same state directory. Do not globally export an
+unrelated `HARVEST_STATE_DIR`; set it explicitly only in a launcher that does
+not provide `HERDR_PLUGIN_STATE_DIR`. A conventional path such as
+`~/.local/state/herdr/plugins/<plugin-id>` can be a heuristic when checking a
+launcher, but it is not authoritative. Do not treat a CLI-reported
+configuration directory as the state directory.
 
 `HARVEST_STATE_DIR` takes precedence when both variables are set. The exact
 opt-in value is `1`. A new Codex pane or standalone Codex process sees the
@@ -106,6 +105,23 @@ changing, or uninstalling the setup.
 
 Symlinked setup paths are supported: entrypoints compare the real module path,
 so stow- or dotfiles-managed ancestor directories do not cause silent no-ops.
+
+### Timestamp compatibility
+
+The Inbox displays the terminal completion time for Codex items, assigned once
+when the ingest path persists them. New terminal interactions receive it at
+that write; duplicate deliveries keep the original value. Older Pi/Codex rows
+from schema v5 have no capture-time column, so the forward-only v5-to-v6
+migration adds nullable `completed_at_ms` while keeping those rows with `NULL`;
+they may show `unknown time`, and historical precision is not recoverable.
+
+Both setup manifests copy the changed runtime files
+`src/domain/pi-interaction.ts`, `src/persistence/migrations.ts`, and
+`src/persistence/pi-interaction-store.ts`. Refresh the installed Codex support
+tree with `node src/bin/codex-setup.ts install` before restarting affected
+processes; a source checkout does not update installed files automatically.
+There is no separate migration command or special database-first deployment
+order.
 
 ## Open and use the Inbox
 

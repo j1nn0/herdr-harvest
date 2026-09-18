@@ -28,6 +28,7 @@ import {
   formatGroupedInboxRow,
   formatInboxRow,
   formatOrchestrationHeader,
+  formatTimestamp,
   inboxViewportLines,
   listOffsetForCursor,
   selectedMetadataLines,
@@ -155,10 +156,17 @@ function fixtureInScope(item: InboxItem, scope: InboxScope): boolean {
   return scope === "archived" ? item.archived : !item.archived;
 }
 
-/** Mirrors the service's all-scope order: capture time, then descending id. */
+/** Mirrors the service's all-scope order: known time, unknown time, then id. */
 function compareFixtureCapture(left: InboxItem, right: InboxItem): number {
-  if (left.capturedAtMs !== right.capturedAtMs) {
-    return right.capturedAtMs - left.capturedAtMs;
+  const leftTimestamp = left.capturedAtMs;
+  const rightTimestamp = right.capturedAtMs;
+  const leftKnown = leftTimestamp !== null && Number.isFinite(leftTimestamp);
+  const rightKnown = rightTimestamp !== null && Number.isFinite(rightTimestamp);
+  if (leftKnown !== rightKnown) {
+    return leftKnown ? -1 : 1;
+  }
+  if (leftKnown && rightKnown && leftTimestamp !== rightTimestamp) {
+    return rightTimestamp - leftTimestamp;
   }
   if (left.id === right.id) {
     return 0;
@@ -442,6 +450,12 @@ describe("inbox TUI", () => {
     assert.ok(displayWidth(formatInboxRow(item, 1, 60_000)) <= 1);
     assert.ok(displayWidth(formatInboxRow(item, Number.NaN, 60_000)) <= 80);
     assert.ok(displayWidth(formatInboxRow(item, Number.POSITIVE_INFINITY, 60_000)) <= 80);
+  });
+
+  test("renders unknown and known timestamps without inventing a date", () => {
+    assert.equal(formatTimestamp(null, 60_000), "unknown time");
+    assert.equal(formatTimestamp(0, 86_400_000), "1970-01-01 00:00");
+    assert.equal(formatTimestamp(59_000, 60_000), "just now");
   });
 
   test("formats selected metadata on two truncated lines only when it fits", () => {

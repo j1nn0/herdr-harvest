@@ -29,7 +29,8 @@ export interface InboxItem {
   workspaceLabel: string;
   herdrSessionLabel: string | null;
   paneLabel: string;
-  capturedAtMs: number;
+  /** Legacy capture or terminal completion time; null means the date is unknown. */
+  capturedAtMs: number | null;
   preview: string;
   unread: boolean;
   archived: boolean;
@@ -106,9 +107,11 @@ function listResults(
     .filter(isTerminalInteraction)
     .map(toInteractionItem)
     .filter((item) => !isSearchQueryActive(query) || matchesInboxSearch(item, query));
-  const items =
-    scope === "all" ? orderAllItems([...legacyItems, ...piItems]) : [...legacyItems, ...piItems];
-  return items;
+  const items = [...legacyItems, ...piItems];
+  if (scope === "archived") {
+    return items;
+  }
+  return scope === "all" ? orderAllItems(items) : orderActiveItems(items);
 }
 
 /** `list("archived")` and `list({ mode: "archived" })` describe the same request. */
@@ -129,18 +132,28 @@ function orderedResults(store: ResultStore, scope: InboxScope): HarvestResult[] 
     case "archived":
       return store.listArchived();
     case "all":
-      return [...store.list({ includeArchived: true })].sort(compareByCaptureDesc);
+      return store.list({ includeArchived: true });
   }
 }
 
-/**
- * Global order for the "all" scope: newest capture first, then descending id.
- * It is intentionally independent of the unread-first order the active
- * collection uses.
- */
-function compareByCaptureDesc(left: HarvestResult, right: HarvestResult): number {
-  if (left.capturedAtMs !== right.capturedAtMs) {
-    return right.capturedAtMs - left.capturedAtMs;
+/** Active rows keep the existing unread-first policy across every source. */
+function orderActiveItems(items: InboxItem[]): InboxItem[] {
+  return items.sort((left, right) => compareInboxItems(left, right, true));
+}
+
+/** All rows use the same chronological policy without an unread priority. */
+function orderAllItems(items: InboxItem[]): InboxItem[] {
+  return items.sort((left, right) => compareInboxItems(left, right, false));
+}
+
+function compareInboxItems(left: InboxItem, right: InboxItem, unreadFirst: boolean): number {
+  if (unreadFirst && left.unread !== right.unread) {
+    return left.unread ? -1 : 1;
+  }
+
+  const timestampOrder = compareTimestampDesc(left.capturedAtMs, right.capturedAtMs);
+  if (timestampOrder !== 0) {
+    return timestampOrder;
   }
   if (left.id === right.id) {
     return 0;
@@ -148,16 +161,21 @@ function compareByCaptureDesc(left: HarvestResult, right: HarvestResult): number
   return left.id < right.id ? 1 : -1;
 }
 
-function orderAllItems(items: InboxItem[]): InboxItem[] {
-  return items.sort((left, right) => {
-    if (left.capturedAtMs !== right.capturedAtMs) {
-      return right.capturedAtMs - left.capturedAtMs;
-    }
-    if (left.id === right.id) {
-      return 0;
-    }
-    return left.id < right.id ? 1 : -1;
-  });
+/** Known timestamps sort newest first; unknown timestamps are placed last. */
+function compareTimestampDesc(left: number | null, right: number | null): number {
+  const leftKnown = isKnownTimestamp(left);
+  const rightKnown = isKnownTimestamp(right);
+  if (leftKnown !== rightKnown) {
+    return leftKnown ? -1 : 1;
+  }
+  if (leftKnown && rightKnown && left !== right) {
+    return right - left;
+  }
+  return 0;
+}
+
+function isKnownTimestamp(timestampMs: number | null): timestampMs is number {
+  return timestampMs !== null && Number.isFinite(timestampMs);
 }
 
 function openResult(
@@ -293,7 +311,7 @@ function toPiItem(interaction: PiInteraction): InboxItem {
     workspaceLabel: "Pi",
     herdrSessionLabel: null,
     paneLabel: "Pi interaction",
-    capturedAtMs: 0,
+    capturedAtMs: interaction.completedAtMs,
     preview: makePreview(previewSource),
     unread: false,
     archived: false,
@@ -330,7 +348,7 @@ function toCodexItem(interaction: PiInteraction): InboxItem {
     workspaceLabel: "Codex",
     herdrSessionLabel: null,
     paneLabel: "Codex interaction",
-    capturedAtMs: 0,
+    capturedAtMs: interaction.completedAtMs,
     preview: makePreview(previewSource),
     unread: false,
     archived: false,

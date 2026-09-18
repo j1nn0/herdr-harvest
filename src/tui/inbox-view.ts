@@ -611,8 +611,8 @@ function meaningfulLabel(value: string | null): string | null {
   return trimmed.length === 0 ? null : trimmed;
 }
 
-export function formatTimestamp(timestampMs: number, nowMs = Date.now()): string {
-  if (!Number.isFinite(timestampMs)) {
+export function formatTimestamp(timestampMs: number | null, nowMs = Date.now()): string {
+  if (timestampMs === null || !Number.isFinite(timestampMs)) {
     return "unknown time";
   }
 

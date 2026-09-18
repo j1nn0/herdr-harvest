@@ -20,9 +20,14 @@ export type PiInteractionInsertOutcome =
   | { status: "inserted"; interaction: PiInteraction }
   | { status: "duplicate"; interaction: PiInteraction };
 
+export interface PiInteractionStoreDeps {
+  now: () => number;
+}
+
 type SqlRow = Record<string, unknown>;
 
 const SELECT_BY_DEDUP_KEY = "SELECT * FROM pi_interactions WHERE dedup_key = ?";
+const DEFAULT_DEPS: PiInteractionStoreDeps = { now: () => Date.now() };
 
 /** A malformed or oversized interaction is rejected before SQLite is touched. */
 export class PiInteractionValidationError extends RangeError {
@@ -49,9 +54,11 @@ export class PiInteractionConflictError extends Error {
 /** Persistence boundary for terminal Pi interactions. */
 export class PiInteractionStore {
   private readonly db: DatabaseSync;
+  private readonly now: () => number;
 
-  constructor(db: DatabaseSync) {
+  constructor(db: DatabaseSync, deps: PiInteractionStoreDeps = DEFAULT_DEPS) {
     this.db = db;
+    this.now = deps.now;
     runMigrations(db);
   }
 
@@ -61,49 +68,8 @@ export class PiInteractionStore {
    */
   insert(input: PiInteractionInput): PiInteractionInsertOutcome {
     const normalized = normalizeInput(input);
-    const dedupKey = piInteractionDedupKey(normalized);
 
-    return withTransaction(this.db, () => {
-      const changes = this.db
-        .prepare(`
-          INSERT INTO pi_interactions (
-            interaction_id,
-            session_id,
-            submitted_prompt,
-            effective_prompt,
-            final_report,
-            status,
-            failure_reason,
-            provenance,
-            dedup_key
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(dedup_key) DO NOTHING
-        `)
-        .run(
-          normalized.interactionId,
-          normalized.sessionId,
-          normalized.submittedPrompt,
-          normalized.effectivePrompt,
-          normalized.finalReport,
-          normalized.status,
-          normalized.reason,
-          normalized.provenance,
-          dedupKey,
-        );
-      const row = this.db.prepare(SELECT_BY_DEDUP_KEY).get(dedupKey) as SqlRow | undefined;
-      if (row === undefined) {
-        throw new Error("Inserted Pi interaction could not be read back.");
-      }
-
-      const interaction = mapRow(row);
-      if (!sameContent(interaction, normalized, dedupKey)) {
-        throw new PiInteractionConflictError(dedupKey);
-      }
-      return {
-        status: changes.changes > 0 ? "inserted" : "duplicate",
-        interaction,
-      };
-    });
+    return withTransaction(this.db, () => this.insertNormalized(normalized));
   }
 
   /**
@@ -112,7 +78,21 @@ export class PiInteractionStore {
    */
   insertIntoTransaction(input: PiInteractionInput): PiInteractionInsertOutcome {
     const normalized = normalizeInput(input);
+    return this.insertNormalized(normalized);
+  }
+
+  private insertNormalized(normalized: NormalizedPiInteraction): PiInteractionInsertOutcome {
     const dedupKey = piInteractionDedupKey(normalized);
+    const existing = this.db.prepare(SELECT_BY_DEDUP_KEY).get(dedupKey) as SqlRow | undefined;
+    if (existing !== undefined) {
+      const interaction = mapRow(existing);
+      if (!sameContent(interaction, normalized, dedupKey)) {
+        throw new PiInteractionConflictError(dedupKey);
+      }
+      return { status: "duplicate", interaction };
+    }
+
+    const completedAtMs = validateCompletedAtMs(this.now());
     const changes = this.db
       .prepare(`
         INSERT INTO pi_interactions (
@@ -124,8 +104,9 @@ export class PiInteractionStore {
           status,
           failure_reason,
           provenance,
-          dedup_key
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          dedup_key,
+          completed_at_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(dedup_key) DO NOTHING
       `)
       .run(
@@ -138,6 +119,7 @@ export class PiInteractionStore {
         normalized.reason,
         normalized.provenance,
         dedupKey,
+        completedAtMs,
       );
     const row = this.db.prepare(SELECT_BY_DEDUP_KEY).get(dedupKey) as SqlRow | undefined;
     if (row === undefined) {
@@ -318,8 +300,31 @@ function mapRow(row: SqlRow): PiInteraction {
     status: row.status as PiInteractionTerminalStatus,
     reason: row.failure_reason as string | null,
     provenance: row.provenance as string,
+    completedAtMs: readCompletedAtMs(row.completed_at_ms),
     dedupKey: row.dedup_key as string,
   };
+}
+
+function readCompletedAtMs(value: unknown): number | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  return validateCompletedAtMs(value);
+}
+
+function validateCompletedAtMs(value: unknown): number {
+  if (
+    typeof value !== "number" ||
+    !Number.isFinite(value) ||
+    !Number.isInteger(value) ||
+    value < 0
+  ) {
+    throw new PiInteractionValidationError(
+      "invalid-completedAtMs",
+      "completedAtMs must be a finite non-negative integer.",
+    );
+  }
+  return value;
 }
 
 function sameContent(

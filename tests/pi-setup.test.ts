@@ -210,9 +210,12 @@ describe("Pi collector setup", () => {
     try {
       const store = new PiInteractionStore(db);
       const stored = store.get(input.sessionId, input.interactionId);
+      assert.ok(stored);
+      assert.equal(typeof stored.completedAtMs, "number");
       assert.deepEqual(stored, {
         ...input,
-        dedupKey: stored?.dedupKey,
+        completedAtMs: stored.completedAtMs,
+        dedupKey: stored.dedupKey,
       });
     } finally {
       db.close();

@@ -48,7 +48,7 @@ describe("Codex SQLite staging", () => {
           Object.entries(
             db
               .prepare(
-                "SELECT submitted_prompt, effective_prompt, final_report, status, provenance FROM pi_interactions",
+                "SELECT submitted_prompt, effective_prompt, final_report, status, provenance, completed_at_ms FROM pi_interactions",
               )
               .get() as Record<string, unknown>,
           ),
@@ -59,6 +59,7 @@ describe("Codex SQLite staging", () => {
           final_report: null,
           status: "pending",
           provenance: CODEX_NATIVE_HOOKS_PROVENANCE,
+          completed_at_ms: null,
         },
       );
       assert.equal(store.list().length, 1);
@@ -69,7 +70,7 @@ describe("Codex SQLite staging", () => {
 
   test("commits through PiInteractionStore and reads back exact completed text", () => {
     const db = openDatabase(":memory:");
-    const store = new PiInteractionStore(db);
+    const store = new PiInteractionStore(db, { now: () => 6_000 });
     try {
       const sessionId = "session-commit";
       const turnId = "turn-commit";
@@ -88,6 +89,7 @@ describe("Codex SQLite staging", () => {
       assert.equal(outcome.interaction.submittedPrompt, "prompt\n日本語");
       assert.equal(outcome.interaction.finalReport, "report\n世界 🌊");
       assert.equal(outcome.interaction.provenance, CODEX_NATIVE_HOOKS_PROVENANCE);
+      assert.equal(outcome.interaction.completedAtMs, 6_000);
       assert.equal(
         (
           db
