@@ -60,6 +60,117 @@ export class CodexStagingError extends Error {
   }
 }
 
+export interface CodexPendingTurn {
+  sessionId: string;
+  interactionId: string;
+  dedupKey: string;
+}
+
+const CODEX_PENDING_GUARD = `status = 'pending'
+   AND provenance = ?
+   AND session_id <> ''
+   AND interaction_id <> ''
+   AND dedup_key <> ''`;
+
+/** Lists only unambiguous Codex pending rows without reading captured text. */
+export function listCodexPending(db: DatabaseSync, sessionId?: string): CodexPendingTurn[] {
+  const sessionClause = sessionId === undefined ? "" : " AND session_id = ?";
+  const parameters =
+    sessionId === undefined
+      ? [CODEX_NATIVE_HOOKS_PROVENANCE]
+      : [CODEX_NATIVE_HOOKS_PROVENANCE, sessionId];
+  const rows = db
+    .prepare(
+      `SELECT session_id, interaction_id, dedup_key
+         FROM pi_interactions
+        WHERE ${CODEX_PENDING_GUARD}${sessionClause}
+        ORDER BY rowid`,
+    )
+    .all(...parameters) as Array<Record<string, unknown>>;
+  return rows.map((row) => ({
+    sessionId: row.session_id as string,
+    interactionId: row.interaction_id as string,
+    dedupKey: row.dedup_key as string,
+  }));
+}
+
+/** Deletes only the supplied, unambiguous Codex pending keys in one transaction. */
+export function deleteCodexPending(
+  db: DatabaseSync,
+  dedupKeys: readonly string[],
+  sessionId?: string,
+): { deleted: string[] } {
+  const uniqueKeys = [...new Set(dedupKeys.filter((key) => key.length > 0))];
+  if (uniqueKeys.length === 0) {
+    return { deleted: [] };
+  }
+
+  return withTransaction(db, () => {
+    const sessionClause = sessionId === undefined ? "" : " AND session_id = ?";
+    const selectionParameters: string[] =
+      sessionId === undefined
+        ? [CODEX_NATIVE_HOOKS_PROVENANCE]
+        : [CODEX_NATIVE_HOOKS_PROVENANCE, sessionId];
+    const candidates = db
+      .prepare(
+        `SELECT dedup_key
+           FROM pi_interactions
+          WHERE ${CODEX_PENDING_GUARD}${sessionClause}
+          ORDER BY rowid`,
+      )
+      .all(...selectionParameters) as Array<Record<string, unknown>>;
+    const requestedKeys = new Set(uniqueKeys);
+    const candidateKeys = candidates
+      .map((row) => row.dedup_key as string)
+      .filter((key) => requestedKeys.has(key));
+    if (candidateKeys.length === 0) {
+      return { deleted: [] };
+    }
+
+    const deleted: string[] = [];
+    for (let offset = 0; offset < candidateKeys.length; offset += 500) {
+      const chunk = candidateKeys.slice(offset, offset + 500);
+      const chunkPlaceholders = chunk.map(() => "?").join(", ");
+      const deleteParameters =
+        sessionId === undefined
+          ? [CODEX_NATIVE_HOOKS_PROVENANCE, ...chunk]
+          : [CODEX_NATIVE_HOOKS_PROVENANCE, sessionId, ...chunk];
+      const result = db
+        .prepare(
+          `DELETE FROM pi_interactions
+             WHERE ${CODEX_PENDING_GUARD}${sessionClause}
+               AND dedup_key IN (${chunkPlaceholders})`,
+        )
+        .run(...deleteParameters);
+      if (result.changes === chunk.length) {
+        deleted.push(...chunk);
+        continue;
+      }
+
+      // Keep the return value truthful if a database trigger or other local
+      // constraint causes only part of a guarded delete to apply.
+      for (const key of chunk) {
+        const remaining = db
+          .prepare(
+            `SELECT 1
+               FROM pi_interactions
+              WHERE ${CODEX_PENDING_GUARD}${sessionClause}
+                AND dedup_key = ?`,
+          )
+          .get(
+            ...(sessionId === undefined
+              ? [CODEX_NATIVE_HOOKS_PROVENANCE, key]
+              : [CODEX_NATIVE_HOOKS_PROVENANCE, sessionId, key]),
+          );
+        if (remaining === undefined) {
+          deleted.push(key);
+        }
+      }
+    }
+    return { deleted };
+  });
+}
+
 interface StagingRow {
   interactionId: string;
   sessionId: string;

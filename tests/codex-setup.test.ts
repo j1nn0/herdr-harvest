@@ -5,7 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
-
+import {
+  CODEX_NATIVE_HOOKS_PROVENANCE,
+  codexInteractionId,
+} from "../src/codex/collector-contract.ts";
 import {
   CODEX_COLLECTOR_SOURCE_FILES,
   CodexSetupConflictError,
@@ -16,6 +19,15 @@ import {
   statusCodexCollector,
   uninstallCodexCollector,
 } from "../src/codex/setup.ts";
+import {
+  type CodexPendingTurn,
+  deleteCodexPending,
+  listCodexPending,
+  stageCodexPrompt,
+  stageCodexReport,
+} from "../src/codex/staging.ts";
+import { openDatabase } from "../src/persistence/database.ts";
+import { PiInteractionStore } from "../src/persistence/pi-interaction-store.ts";
 
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
 const setupBinary = join(repositoryRoot, "src", "bin", "codex-setup.ts");
@@ -210,6 +222,139 @@ describe("Codex collector setup", () => {
   });
 });
 
+test("prune defaults to a metadata-only dry run", () => {
+  const value = pruneFixture();
+  const result = runCodexSetupProcess(["prune", "--home", value.home], value);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stderr, "");
+  assert.match(result.stdout, /pending codex turns: 2/);
+  for (const candidate of value.pending) {
+    assert.match(result.stdout, new RegExp(`interactionId=${candidate.interactionId}`));
+    assert.match(result.stdout, new RegExp(`dedupKey=${candidate.dedupKey.slice(0, 16)}`));
+  }
+  assert.match(result.stdout, /nothing deleted \(dry-run/);
+  assert.equal(result.stdout.includes(value.pendingPrompt), false);
+  assert.equal(result.stdout.includes(value.pendingReport), false);
+  assert.deepEqual(readPending(value), value.pending);
+});
+
+test("prune requires both confirmation flags and can restrict deletion by session", () => {
+  const value = pruneFixture();
+  const missingConfirm = runCodexSetupProcess(["prune", "--home", value.home, "--apply"], value);
+  assert.equal(missingConfirm.status, 2);
+  assert.match(missingConfirm.stderr, /--confirm/);
+  assert.deepEqual(readPending(value), value.pending);
+
+  const applied = runCodexSetupProcess(
+    ["prune", "--home", value.home, "--apply", "--confirm", "--session", "codex-session-a"],
+    value,
+  );
+  assert.equal(applied.status, 0, applied.stderr);
+  assert.equal(applied.stderr, "");
+  assert.match(applied.stdout, /deleted codex pending turns: 1/);
+  assert.match(applied.stdout, new RegExp(`deleted dedupKey=${value.pending[0]?.dedupKey}`));
+  assert.equal(applied.stdout.includes(value.pendingPrompt), false);
+  assert.equal(applied.stdout.includes(value.pendingReport), false);
+  assert.deepEqual(readPending(value), [value.pending[1]]);
+
+  const noMatch = runCodexSetupProcess(
+    ["prune", "--home", value.home, "--apply", "--confirm", "--session", "missing-session"],
+    value,
+  );
+  assert.equal(noMatch.status, 0, noMatch.stderr);
+  assert.match(noMatch.stdout, /deleted codex pending turns: 0/);
+  assert.deepEqual(readPending(value), [value.pending[1]]);
+
+  const missingApply = runCodexSetupProcess(["prune", "--home", value.home, "--confirm"], value);
+  assert.equal(missingApply.status, 2);
+  assert.match(missingApply.stderr, /--apply/);
+
+  const emptySession = runCodexSetupProcess(
+    ["prune", "--home", value.home, "--session", ""],
+    value,
+  );
+  assert.equal(emptySession.status, 2);
+  assert.match(emptySession.stderr, /--session/);
+
+  const db = openDatabase(value.databasePath);
+  try {
+    const store = new PiInteractionStore(db);
+    assert.equal(store.get("pi-session", "pi-interaction")?.status, "completed");
+    assert.equal(
+      store.get("codex-completed-session", codexInteractionId("codex-completed-session", "turn"))
+        ?.status,
+      "completed",
+    );
+    assert.equal(store.get("codex-failed-session", "codex-failed-interaction")?.status, "failed");
+  } finally {
+    db.close();
+  }
+});
+
+test("prune helpers list and delete only non-empty Codex pending keys", () => {
+  const db = openDatabase(":memory:");
+  const store = new PiInteractionStore(db);
+  try {
+    const sessionId = "helper-session";
+    const turnId = "helper-turn";
+    stageCodexPrompt(db, {
+      kind: "promptObserved",
+      sessionId,
+      turnId,
+      submittedPrompt: "helper pending prompt",
+    });
+    db.prepare(
+      `INSERT INTO pi_interactions (
+         interaction_id, session_id, submitted_prompt, effective_prompt,
+         final_report, status, failure_reason, provenance, dedup_key
+       ) VALUES (?, ?, ?, NULL, NULL, 'pending', NULL, ?, ?)`,
+    ).run("", "", "ambiguous body", CODEX_NATIVE_HOOKS_PROVENANCE, "ambiguous-key");
+    db.prepare(
+      `INSERT INTO pi_interactions (
+         interaction_id, session_id, submitted_prompt, effective_prompt,
+         final_report, status, failure_reason, provenance, dedup_key
+       ) VALUES (?, ?, ?, NULL, NULL, 'pending', NULL, ?, ?)`,
+    ).run("other-interaction", "other-session", "other body", "pi-observer", "other-key");
+    const pending = listCodexPending(db);
+    assert.equal(pending.length, 1);
+    const first = pending.at(0);
+    assert.ok(first);
+    assert.equal("submittedPrompt" in first, false);
+    assert.deepEqual(deleteCodexPending(db, ["", "unknown-dedup-key"]), { deleted: [] });
+    assert.deepEqual(listCodexPending(db), pending);
+    assert.deepEqual(deleteCodexPending(db, ["ambiguous-key", "other-key"]), { deleted: [] });
+    assert.deepEqual(deleteCodexPending(db, [first.dedupKey, "unknown-dedup-key"]), {
+      deleted: [first.dedupKey],
+    });
+    assert.deepEqual(listCodexPending(db), []);
+    assert.equal(store.get(sessionId, codexInteractionId(sessionId, turnId)), null);
+    assert.equal(
+      (
+        db
+          .prepare(
+            "SELECT COUNT(*) AS count FROM pi_interactions WHERE dedup_key IN ('ambiguous-key', 'other-key')",
+          )
+          .get() as { count: number }
+      ).count,
+      2,
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test("status reports pending Codex count without changing setup state", () => {
+  const value = pruneFixture();
+  const result = runCodexSetupProcess(["status", "--home", value.home], value);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /pending codex turns: 2/);
+  assert.equal(result.stdout.includes(value.pendingPrompt), false);
+  assert.equal(result.stdout.includes(value.pendingReport), false);
+  assert.equal(statusCodexCollector({ homeDir: value.home }, 2).pendingCodexTurns, 2);
+});
+
 function fixture(): string {
   const base = mkdtempSync(join(tmpdir(), "herdr-harvest-codex-setup-"));
   temporaryDirectories.push(base);
@@ -224,4 +369,117 @@ function hookCommand(paths: CodexSetupPaths, file: "submit-hook.ts" | "stop-hook
 
 function expectedGroup(command: string): object {
   return { hooks: [{ type: "command", command, timeout: 15 }] };
+}
+
+interface PruneFixture {
+  home: string;
+  stateDirectory: string;
+  databasePath: string;
+  pending: CodexPendingTurn[];
+  pendingPrompt: string;
+  pendingReport: string;
+}
+
+function pruneFixture(): PruneFixture {
+  const base = mkdtempSync(join(tmpdir(), "herdr-harvest-codex-prune-"));
+  temporaryDirectories.push(base);
+  const home = join(base, "home");
+  const stateDirectory = join(base, "state");
+  mkdirSync(home, { recursive: true });
+  mkdirSync(stateDirectory, { recursive: true });
+  const databasePath = join(stateDirectory, "harvest.db");
+  const pendingPrompt = "pending prompt α\n  ";
+  const pendingReport = "pending report β\n";
+
+  const db = openDatabase(databasePath);
+  try {
+    const store = new PiInteractionStore(db);
+    store.insert({
+      interactionId: "pi-interaction",
+      sessionId: "pi-session",
+      submittedPrompt: "pi prompt",
+      effectivePrompt: null,
+      finalReport: "pi report",
+      status: "completed",
+      reason: null,
+      provenance: "pi-observer",
+    });
+    store.insert({
+      interactionId: codexInteractionId("codex-completed-session", "turn"),
+      sessionId: "codex-completed-session",
+      submittedPrompt: "completed codex prompt",
+      effectivePrompt: null,
+      finalReport: "completed codex report",
+      status: "completed",
+      reason: null,
+      provenance: CODEX_NATIVE_HOOKS_PROVENANCE,
+    });
+    store.insert({
+      interactionId: "codex-failed-interaction",
+      sessionId: "codex-failed-session",
+      submittedPrompt: "failed codex prompt",
+      effectivePrompt: null,
+      finalReport: null,
+      status: "failed",
+      reason: "cancelled",
+      provenance: CODEX_NATIVE_HOOKS_PROVENANCE,
+    });
+    stageCodexPrompt(db, {
+      kind: "promptObserved",
+      sessionId: "codex-session-a",
+      turnId: "turn-a",
+      submittedPrompt: pendingPrompt,
+    });
+    stageCodexReport(db, {
+      kind: "reportObserved",
+      sessionId: "codex-session-a",
+      turnId: "turn-a",
+      provisionalReport: pendingReport,
+    });
+    stageCodexPrompt(db, {
+      kind: "promptObserved",
+      sessionId: "codex-session-b",
+      turnId: "turn-b",
+      submittedPrompt: "second pending prompt",
+    });
+    stageCodexReport(db, {
+      kind: "reportObserved",
+      sessionId: "codex-session-b",
+      turnId: "turn-b",
+      provisionalReport: "second pending report",
+    });
+    return {
+      home,
+      stateDirectory,
+      databasePath,
+      pending: listCodexPending(db),
+      pendingPrompt,
+      pendingReport,
+    };
+  } finally {
+    db.close();
+  }
+}
+
+function readPending(value: PruneFixture): CodexPendingTurn[] {
+  const db = openDatabase(value.databasePath);
+  try {
+    return listCodexPending(db);
+  } finally {
+    db.close();
+  }
+}
+
+function runCodexSetupProcess(args: readonly string[], value: PruneFixture) {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    HOME: value.home,
+    HARVEST_STATE_DIR: value.stateDirectory,
+  };
+  delete env.HERDR_PLUGIN_STATE_DIR;
+  return spawnSync(process.execPath, [setupBinary, ...args], {
+    cwd: repositoryRoot,
+    env,
+    encoding: "utf8",
+  });
 }

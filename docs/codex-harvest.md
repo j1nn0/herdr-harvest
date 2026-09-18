@@ -138,6 +138,29 @@ Codex completed rows reuse the existing `pi_interactions` table in
 existing table until the notify commit trigger arrives. Do not delete or
 rewrite the table to enable this integration.
 
+### Explicitly prune incomplete Codex turns
+
+Pending Codex rows are retained until an operator explicitly prunes them. A
+dry run is the default and prints only the pending count, session identifiers,
+interaction identifiers, and dedup-key prefixes:
+
+```bash
+node src/bin/codex-setup.ts prune
+```
+
+Deletion requires both flags, and can be restricted to one native session:
+
+```bash
+node src/bin/codex-setup.ts prune --apply --confirm
+node src/bin/codex-setup.ts prune --apply --confirm --session <session-id>
+```
+
+The command deletes only rows guarded by `status = 'pending'` and
+`provenance = 'codex-native-hooks'`, and reports deleted dedup keys. It never
+deletes Pi rows, completed or failed rows, or rows with ambiguous empty keys.
+It does not inspect or print prompt/provisional-report bodies. There is no
+automatic age-based cleanup or active-session detection.
+
 ## Collection contract
 
 The collector uses only the native Codex lifecycle:
@@ -175,8 +198,8 @@ are discarded.
 Veto, error, interruption, or crash paths do not emit the commit notify. They
 therefore remain incomplete and are intentionally under-captured rather than
 misidentified as completed interactions. Pending rows currently have no time
-column, so automatic stale-pending sweep/prune is not implemented; an
-explicit future prune operation is required before stale cleanup can be added.
+column, so automatic stale-pending cleanup is not implemented; use the
+explicit prune command above when an operator has reviewed the candidates.
 
 ## Privacy and failure behavior
 
@@ -203,7 +226,8 @@ fallback is used.
   interruption, crash, or a missing notify can leave an incomplete pending
   row; this is deliberate under-capture.
 - Automatic stale pending cleanup is not implemented because the reused table
-  has no staging timestamp. An explicit prune operation is future work.
+  has no staging timestamp. Use `prune --apply --confirm` for explicit,
+  operator-confirmed cleanup.
 - The setup command does not modify `config.toml`; the printed top-level
   notify entry must be merged manually and must not be duplicated.
 - Hook entrypoints resolve their real module path, so user-level setup remains

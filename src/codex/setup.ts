@@ -76,6 +76,7 @@ export interface CodexSetupStatusResult {
   notify: CodexNotifyStatus;
   notifyLine: string;
   trust: "unknown";
+  pendingCodexTurns: number;
   reason?: string;
 }
 
@@ -338,7 +339,10 @@ export function uninstallCodexCollector(options: CodexSetupOptions): CodexSetupU
 }
 
 /** Report setup state without creating directories or modifying user config. */
-export function statusCodexCollector(options: CodexSetupOptions): CodexSetupStatusResult {
+export function statusCodexCollector(
+  options: CodexSetupOptions,
+  pendingCodexTurns = 0,
+): CodexSetupStatusResult {
   const paths = getCodexSetupPaths(options.homeDir);
   assertSafeHome(paths.homeDirectory);
   const plan = buildFilePlan(paths, options.sourceRoot);
@@ -356,6 +360,7 @@ export function statusCodexCollector(options: CodexSetupOptions): CodexSetupStat
       notify: "stale",
       notifyLine: notifyLine(paths),
       trust: "unknown",
+      pendingCodexTurns,
       reason: `unsafe setup path: ${unsafePath}`,
     };
   }
@@ -382,6 +387,7 @@ export function statusCodexCollector(options: CodexSetupOptions): CodexSetupStat
       notify: notify.status,
       notifyLine: notifyLine(paths),
       trust: "unknown",
+      pendingCodexTurns,
       reason: "invalid ownership manifest",
     };
   }
@@ -436,6 +442,7 @@ export function statusCodexCollector(options: CodexSetupOptions): CodexSetupStat
     notify: notify.status,
     notifyLine: notifyLine(paths),
     trust: "unknown",
+    pendingCodexTurns,
     reason: reasons.length > 0 ? reasons.join("; ") : undefined,
   };
 }
