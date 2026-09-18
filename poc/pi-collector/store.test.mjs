@@ -23,7 +23,7 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
-test("store writes terminal records atomically with exact text and private modes", async () => {
+test("store writes terminal records atomically with exact text", async () => {
   const root = await temporaryRoot();
   const interaction = {
     id: "interaction-1",
@@ -36,6 +36,17 @@ test("store writes terminal records atomically with exact text and private modes
   const result = await writeInteraction(root, interaction, "pi-observer");
   assert.equal(result.status, "inserted");
   assert.deepEqual(await readInteractions(root), [{ ...interaction, provenance: "pi-observer" }]);
+});
+
+test("store creates private modes", { skip: process.platform === "win32" }, async () => {
+  const root = await temporaryRoot();
+  await writeInteraction(root, {
+    id: "mode-interaction",
+    sessionId: "mode-session",
+    prompt: "prompt",
+    finalReport: "report",
+    status: "completed",
+  }, "pi-observer");
 
   const directoryMode = (await stat(root)).mode & 0o777;
   const filePath = join(root, STORE_FILE_NAME);
