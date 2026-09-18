@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-09-18
+
+### Fixed
+
+- Fixed Inbox ordering so Legacy, Pi, and Codex results share one chronological order instead of listing all Legacy entries first.
+- Recorded an actual terminal completion timestamp for newly captured Pi and Codex interactions.
+- Displayed an honest `unknown time` label for historical interactions whose capture time was never stored, instead of `1970-01-01 00:00`.
+- Corrected state-directory discovery instructions to use the launch environment instead of the plugin configuration directory.
+
+### Compatibility
+
+- Database schema upgrades from v5 to v6 (forward-only `ALTER TABLE pi_interactions ADD COLUMN completed_at_ms`, no backfill).
+- Existing interaction contents, identities, statuses, and provenance are preserved; historical Pi/Codex timestamps remain unknown.
+- Installed Pi and Codex support files must be refreshed as documented and collectors restarted; v0.9.1 collectors fail closed on a v6 database and cannot operate until refreshed.
+- True rollback after migration requires restoring the pre-upgrade database backup; restoring old code alone is not sufficient.
+
 ## [0.9.1] - 2026-09-18
 
 ### Fixed
@@ -167,7 +183,8 @@ First public release.
 - A completion inferred only from `blocked → idle` is not captured, because that transition can equally mean an approval prompt was cancelled.
 - Archived results stay in the database but cannot yet be browsed or restored from the inbox.
 
-[Unreleased]: https://github.com/j1nn0/herdr-harvest/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/j1nn0/herdr-harvest/compare/v0.9.2...HEAD
+[0.9.2]: https://github.com/j1nn0/herdr-harvest/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/j1nn0/herdr-harvest/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/j1nn0/herdr-harvest/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/j1nn0/herdr-harvest/compare/v0.7.0...v0.8.0

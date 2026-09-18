@@ -109,12 +109,21 @@ const createPiInteractions: Migration = {
   },
 };
 
+const addPiCompletedAtMs: Migration = {
+  version: 6,
+  name: "add-pi-completed-at-ms",
+  up(db) {
+    db.exec("ALTER TABLE pi_interactions ADD COLUMN completed_at_ms INTEGER");
+  },
+};
+
 export const MIGRATIONS: readonly Migration[] = [
   createResults,
   addHerdrSession,
   createPaneLifecycle,
   addOrchestrationClaim,
   createPiInteractions,
+  addPiCompletedAtMs,
 ];
 
 export function runMigrations(db: DatabaseSync): { from: number; to: number; applied: string[] } {

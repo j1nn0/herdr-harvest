@@ -39,6 +39,7 @@ export interface PiInteraction {
   status: PiInteractionTerminalStatus;
   reason: string | null;
   provenance: string;
+  completedAtMs: number | null;
   dedupKey: string;
 }
 

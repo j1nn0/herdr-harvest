@@ -24,6 +24,7 @@ function makeInteraction(overrides: Partial<PiInteraction> = {}): PiInteraction 
     status: "completed",
     reason: null,
     provenance: "codex-native-hooks",
+    completedAtMs: null,
     dedupKey: "dedup-codex-1",
     ...overrides,
   };

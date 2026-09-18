@@ -24,6 +24,7 @@ function makePi(overrides: Partial<PiInteraction> = {}): PiInteraction {
     status: "completed",
     reason: null,
     provenance: "pi-observer",
+    completedAtMs: null,
     dedupKey: "dedup-pi-1",
     ...overrides,
   };

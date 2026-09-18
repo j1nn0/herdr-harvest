@@ -47,9 +47,13 @@ describe("ingest-pi entrypoint", () => {
     const db = openDatabase(join(stateDirectory, "harvest.db"));
     try {
       const store = new PiInteractionStore(db);
-      assert.deepEqual(store.get("session-ingest", "ingest-1"), {
+      const stored = store.get("session-ingest", "ingest-1");
+      assert.ok(stored);
+      assert.equal(typeof stored.completedAtMs, "number");
+      assert.deepEqual(stored, {
         ...input,
-        dedupKey: store.get("session-ingest", "ingest-1")?.dedupKey,
+        completedAtMs: stored.completedAtMs,
+        dedupKey: stored.dedupKey,
       });
     } finally {
       db.close();
