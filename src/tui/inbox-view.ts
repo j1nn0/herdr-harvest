@@ -499,18 +499,19 @@ function resultFieldValue(item: InboxItem, field: ResultField, nowMs: number): s
 
 /** Short, always-visible kind/status marker carried by the inbox row. */
 export function inboxItemBadge(item: InboxItem): string {
-  if (item.kind !== "pi") {
+  if (item.kind !== "pi" && item.kind !== "codex") {
     return "Legacy";
   }
+  const label = item.kind === "codex" ? "Codex" : "Pi";
   switch (item.status) {
     case "completed":
-      return "Pi · Completed";
+      return `${label} · Completed`;
     case "failed":
-      return "Pi · Failed-incomplete";
+      return `${label} · Failed-incomplete`;
     case "pending":
-      return "Pi · Pending";
+      return `${label} · Pending`;
     default:
-      return "Pi · Unknown";
+      return `${label} · Unknown`;
   }
 }
 

@@ -5,6 +5,7 @@ export interface HarvestConfig {
   captureLines: number;
   captureSource: ReadSource;
   piCollectionEnabled: boolean;
+  codexCollectionEnabled?: boolean;
   databasePath: string;
   herdrSessionKey: string | null;
   herdrSessionLabel: string | null;
@@ -32,16 +33,28 @@ export function loadConfig(env: Record<string, string | undefined>): {
   const captureLines = parseCaptureLines(env.HARVEST_CAPTURE_LINES, warnings);
   const captureSource = parseCaptureSource(env.HARVEST_CAPTURE_SOURCE, warnings);
   const piCollectionEnabled = parsePiCollectionEnabled(env.HARVEST_PI_COLLECT, warnings);
+  const codexCollectionEnabled = parseCodexCollectionEnabled(env.HARVEST_CODEX_COLLECT, warnings);
+
+  const config: HarvestConfig = {
+    captureLines,
+    captureSource,
+    piCollectionEnabled,
+    codexCollectionEnabled,
+    databasePath: join(stateDir, "harvest.db"),
+    herdrSessionKey: parseHerdrSessionKey(env.HERDR_SOCKET_PATH),
+    herdrSessionLabel: parseHerdrSessionLabel(env.HERDR_SOCKET_PATH),
+  };
+  // Keep the existing enumerable config shape stable for legacy callers while
+  // exposing the new opt-in field to Codex adapters.
+  Object.defineProperty(config, "codexCollectionEnabled", {
+    configurable: false,
+    enumerable: false,
+    value: codexCollectionEnabled,
+    writable: false,
+  });
 
   return {
-    config: {
-      captureLines,
-      captureSource,
-      piCollectionEnabled,
-      databasePath: join(stateDir, "harvest.db"),
-      herdrSessionKey: parseHerdrSessionKey(env.HERDR_SOCKET_PATH),
-      herdrSessionLabel: parseHerdrSessionLabel(env.HERDR_SOCKET_PATH),
-    },
+    config,
     warnings,
   };
 }
@@ -60,6 +73,26 @@ function parsePiCollectionEnabled(value: string | undefined, warnings: string[])
   }
   warnings.push(
     `HARVEST_PI_COLLECT must be 1 to enable Pi collection or 0 to disable it; collection remains disabled (received ${JSON.stringify(value)}).`,
+  );
+  return false;
+}
+
+/** Production Codex collection is opt-in and accepts only the explicit value `1`. */
+export function isCodexCollectionEnabled(
+  env: Readonly<Record<string, string | undefined>>,
+): boolean {
+  return env.HARVEST_CODEX_COLLECT === "1";
+}
+
+function parseCodexCollectionEnabled(value: string | undefined, warnings: string[]): boolean {
+  if (value === undefined || value === "0") {
+    return false;
+  }
+  if (value === "1") {
+    return true;
+  }
+  warnings.push(
+    `HARVEST_CODEX_COLLECT must be 1 to enable Codex collection or 0 to disable it; collection remains disabled (received ${JSON.stringify(value)}).`,
   );
   return false;
 }

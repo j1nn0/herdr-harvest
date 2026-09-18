@@ -22,7 +22,8 @@ export interface ResultViewProps {
 
 export const ResultView: FC<ResultViewProps> = ({ detail, scrollOffset, status = null }) => {
   const { stdout } = useStdout();
-  const isPi = detail.kind === "pi";
+  const isInteraction = detail.kind === "pi" || detail.kind === "codex";
+  const interactionLabel = detail.kind === "codex" ? "Codex" : "Pi";
   const lines = detailContentLines(detail);
   const hasOrchestrationContext = detail.orchestrationId !== null;
   const viewport = resultViewportLines(stdout.rows, hasOrchestrationContext);
@@ -39,20 +40,20 @@ export const ResultView: FC<ResultViewProps> = ({ detail, scrollOffset, status =
       ),
     );
 
-  const title = isPi
-    ? `Pi Interaction · ${piStatusLabel(detail.status)}`
+  const title = isInteraction
+    ? `${interactionLabel} Interaction · ${piStatusLabel(detail.status)}`
     : detail.archived
       ? `Harvest Archived Result · ${detail.agentLabel}`
       : `Harvest Result · ${detail.agentLabel}`;
-  const footer = isPi
+  const footer = isInteraction
     ? (detail.finalReport ?? null) === null
       ? "↑/↓ or k/j scroll · PageUp/PageDown page · p copy prompt · f unavailable · y copy prompt · Esc inbox"
       : "↑/↓ or k/j scroll · PageUp/PageDown page · p copy prompt · f copy final report · y copy final report · Esc inbox"
     : detail.archived
       ? "↑/↓ or k/j scroll · PageUp/PageDown page · y copy · r restore · Esc inbox"
       : "↑/↓ or k/j scroll · PageUp/PageDown page · y copy · a archive · Esc inbox";
-  const subtitle = isPi
-    ? `Pi session ${detail.sessionShortId} · ${detail.status === "failed" ? `failure: ${detail.reason ?? "unknown failure"}` : "terminal interaction"}`
+  const subtitle = isInteraction
+    ? `${interactionLabel} session ${detail.sessionShortId} · ${detail.status === "failed" ? `failure: ${detail.reason ?? "unknown failure"}` : "terminal interaction"}`
     : `Herdr: ${detail.herdrSessionLabel ?? "unknown session"} · session ${detail.sessionShortId} · workspace ${detail.workspaceLabel} · pane ${detail.paneLabel} · ${detail.captureSource}`;
   const orchestrationContext =
     detail.orchestrationId === null
@@ -77,12 +78,12 @@ export const ResultView: FC<ResultViewProps> = ({ detail, scrollOffset, status =
 };
 
 /**
- * Logical body lines for the detail view. Pi fields are delimited by labels;
+ * Logical body lines for the detail view. Pi and Codex fields are delimited by labels;
  * their source strings are split only for viewport rendering and remain
  * available verbatim through the app copy actions.
  */
 export function detailContentLines(detail: InboxDetail): string[] {
-  if (detail.kind !== "pi") {
+  if (detail.kind !== "pi" && detail.kind !== "codex") {
     return detail.rawText.split("\n");
   }
 

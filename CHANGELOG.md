@@ -6,6 +6,48 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-18
+
+### Added
+
+- Added an opt-in experimental Codex collector that preserves the exact
+  submitted prompt and the actual final user-facing response as separate
+  Inbox fields with per-field copy actions. Capture uses the native Codex
+  lifecycle only: `UserPromptSubmit` records the original prompt, `Stop`
+  updates a provisional report with the last Stop winning on continuation,
+  and the user-level legacy `agent-turn-complete` notify is the only commit
+  trigger, requiring the provisional report to be byte-identical to the
+  notify payload.
+- Added Codex session/turn correlation, atomic pending-to-completed SQLite
+  persistence in the existing `pi_interactions` table (no migration; schema
+  stays at version 5), and Codex interaction support in the Harvest Inbox
+  with `Codex · Completed` badges, `PROMPT`/`FINAL REPORT` sections, and
+  independent prompt/final-report copying. Pending turns never appear in
+  user-facing Inbox operations.
+- Added one-time Codex setup through `node src/bin/codex-setup.ts install`,
+  with `status`, `uninstall`, and an explicit `prune --apply --confirm`
+  command for incomplete turns. Collecting processes require
+  `HARVEST_CODEX_COLLECT=1` and a state directory in their launching
+  environment. Setup is additive, preserves unrelated hooks and notify
+  entries, and never edits `config.toml` automatically.
+- Added symlink-safe CLI entrypoints shared by the Codex and Pi collectors.
+
+### Fixed
+
+- Fixed Codex turn completion to commit atomically in a single SQLite
+  transaction so a crash cannot lose a collected turn.
+- Fixed installed Codex support trees missing the shared entrypoint helper.
+
+### Compatibility
+
+- Verified with Codex CLI 0.154.0 on macOS; direct and Herdr-mediated
+  collection, interactive Inbox display, and copy-path behavior verified
+  live. Other Codex versions and Linux/Windows live behavior are
+  unverified. Existing Pi and Legacy Results remain compatible.
+- Codex collection requires explicit opt-in, one-time hook installation,
+  manual top-level `notify` merging, and `/hooks` trust approval; see
+  `docs/codex-harvest.md` for setup, limitations, and upgrade guidance.
+
 ## [0.8.0] - 2026-09-17
 
 ### Added
@@ -108,7 +150,8 @@ First public release.
 - A completion inferred only from `blocked → idle` is not captured, because that transition can equally mean an approval prompt was cancelled.
 - Archived results stay in the database but cannot yet be browsed or restored from the inbox.
 
-[Unreleased]: https://github.com/j1nn0/herdr-harvest/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/j1nn0/herdr-harvest/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/j1nn0/herdr-harvest/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/j1nn0/herdr-harvest/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/j1nn0/herdr-harvest/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/j1nn0/herdr-harvest/compare/v0.5.0...v0.6.0
