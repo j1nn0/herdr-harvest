@@ -96,6 +96,47 @@ describe("Pi collector setup", () => {
     );
   });
 
+  test("uninstalls an installation after upgrading from the previous support-file plan", () => {
+    const { home, sourceRoot } = fixture(
+      "legacy upgrade home",
+      "legacy upgrade source",
+      LEGACY_PI_COLLECTOR_SOURCE_FILES,
+    );
+    writeLegacyPiInstallation(home, sourceRoot);
+    const paths = getPiSetupPaths(home);
+    const unrelatedRootFile = join(paths.extensionsDirectory, "keep-me.txt");
+    const unrelatedSupportFile = join(paths.supportDirectory, "keep-me-too.txt");
+    writeFileSync(unrelatedRootFile, "unrelated root content\n");
+    writeFileSync(unrelatedSupportFile, "unrelated support content\n");
+
+    const installed = installPiCollector({ homeDir: home, sourceRoot: repositoryRoot });
+
+    assert.equal(installed.status, "updated");
+    assert.equal(installed.files.length, PI_COLLECTOR_SOURCE_FILES.length + 1);
+    assert.equal(
+      statusPiCollector({ homeDir: home, sourceRoot: repositoryRoot }).status,
+      "installed",
+    );
+
+    const removed = uninstallPiCollector({ homeDir: home, sourceRoot: repositoryRoot });
+    const absent = uninstallPiCollector({ homeDir: home, sourceRoot: repositoryRoot });
+
+    assert.equal(removed.status, "uninstalled");
+    assert.equal(removed.removed.length, PI_COLLECTOR_SOURCE_FILES.length + 2);
+    assert.equal(absent.status, "absent");
+    assert.equal(existsSync(paths.discoveryPath), false);
+    assert.equal(existsSync(paths.manifestPath), false);
+    for (const relativePath of PI_COLLECTOR_SOURCE_FILES) {
+      assert.equal(existsSync(join(paths.supportDirectory, relativePath)), false);
+    }
+    assert.equal(readFileSync(unrelatedRootFile, "utf8"), "unrelated root content\n");
+    assert.equal(readFileSync(unrelatedSupportFile, "utf8"), "unrelated support content\n");
+    assert.equal(
+      statusPiCollector({ homeDir: home, sourceRoot: repositoryRoot }).status,
+      "missing",
+    );
+  });
+
   test("refuses to update an installation with a modified legacy file", () => {
     const { home, sourceRoot } = fixture(
       "modified legacy home",
