@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   cpSync,
   existsSync,
@@ -15,8 +16,12 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { openDatabase } from "../src/persistence/database.ts";
+import { PiInteractionStore } from "../src/persistence/pi-interaction-store.ts";
 import {
   getPiSetupPaths,
+  HARVEST_PI_DISCOVERY_FILE_NAME,
+  HARVEST_PI_SUPPORT_DIRECTORY_NAME,
   installPiCollector,
   PI_COLLECTOR_SOURCE_FILES,
   PiSetupConflictError,
@@ -26,6 +31,20 @@ import {
 
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
 const setupBinary = join(repositoryRoot, "src", "bin", "pi-setup.ts");
+const LEGACY_PI_COLLECTOR_SOURCE_FILES = [
+  "src/pi/observer.ts",
+  "src/pi/collector-contract.ts",
+  "src/pi/diagnostics.ts",
+  "src/pi/ingest-writer.ts",
+  "src/pi/ingest.ts",
+  "src/bin/ingest-pi.ts",
+  "src/config/config.ts",
+  "src/domain/pi-interaction.ts",
+  "src/persistence/database.ts",
+  "src/persistence/migrations.ts",
+  "src/persistence/pi-interaction-store.ts",
+] as const;
+const LEGACY_DISCOVERY_MODULE = 'export { default } from "./herdr-harvest/src/pi/observer.ts";\n';
 const temporaryDirectories: string[] = [];
 
 afterEach(() => {
@@ -47,6 +66,156 @@ describe("Pi collector setup", () => {
     assert.match(readFileSync(paths.discoveryPath, "utf8"), /herdr-harvest\/src\/pi\/observer\.ts/);
     for (const relativePath of PI_COLLECTOR_SOURCE_FILES) {
       assert.equal(existsSync(join(paths.supportDirectory, relativePath)), true);
+    }
+  });
+
+  test("updates an owned installation from the previous support-file plan", () => {
+    const { home, sourceRoot } = fixture(
+      "legacy home",
+      "legacy source",
+      LEGACY_PI_COLLECTOR_SOURCE_FILES,
+    );
+    writeLegacyPiInstallation(home, sourceRoot);
+    const paths = getPiSetupPaths(home);
+
+    assert.equal(
+      statusPiCollector({ homeDir: home, sourceRoot: repositoryRoot }).status,
+      "missing",
+    );
+
+    const result = installPiCollector({ homeDir: home, sourceRoot: repositoryRoot });
+
+    assert.equal(result.status, "updated");
+    assert.equal(
+      existsSync(join(paths.supportDirectory, "src", "runtime", "is-main-module.ts")),
+      true,
+    );
+    assert.equal(
+      statusPiCollector({ homeDir: home, sourceRoot: repositoryRoot }).status,
+      "installed",
+    );
+  });
+
+  test("uninstalls an installation after upgrading from the previous support-file plan", () => {
+    const { home, sourceRoot } = fixture(
+      "legacy upgrade home",
+      "legacy upgrade source",
+      LEGACY_PI_COLLECTOR_SOURCE_FILES,
+    );
+    writeLegacyPiInstallation(home, sourceRoot);
+    const paths = getPiSetupPaths(home);
+    const unrelatedRootFile = join(paths.extensionsDirectory, "keep-me.txt");
+    const unrelatedSupportFile = join(paths.supportDirectory, "keep-me-too.txt");
+    writeFileSync(unrelatedRootFile, "unrelated root content\n");
+    writeFileSync(unrelatedSupportFile, "unrelated support content\n");
+
+    const installed = installPiCollector({ homeDir: home, sourceRoot: repositoryRoot });
+
+    assert.equal(installed.status, "updated");
+    assert.equal(installed.files.length, PI_COLLECTOR_SOURCE_FILES.length + 1);
+    assert.equal(
+      statusPiCollector({ homeDir: home, sourceRoot: repositoryRoot }).status,
+      "installed",
+    );
+
+    const removed = uninstallPiCollector({ homeDir: home, sourceRoot: repositoryRoot });
+    const absent = uninstallPiCollector({ homeDir: home, sourceRoot: repositoryRoot });
+
+    assert.equal(removed.status, "uninstalled");
+    assert.equal(removed.removed.length, PI_COLLECTOR_SOURCE_FILES.length + 2);
+    assert.equal(absent.status, "absent");
+    assert.equal(existsSync(paths.discoveryPath), false);
+    assert.equal(existsSync(paths.manifestPath), false);
+    for (const relativePath of PI_COLLECTOR_SOURCE_FILES) {
+      assert.equal(existsSync(join(paths.supportDirectory, relativePath)), false);
+    }
+    assert.equal(readFileSync(unrelatedRootFile, "utf8"), "unrelated root content\n");
+    assert.equal(readFileSync(unrelatedSupportFile, "utf8"), "unrelated support content\n");
+    assert.equal(
+      statusPiCollector({ homeDir: home, sourceRoot: repositoryRoot }).status,
+      "missing",
+    );
+  });
+
+  test("refuses to update an installation with a modified legacy file", () => {
+    const { home, sourceRoot } = fixture(
+      "modified legacy home",
+      "modified legacy source",
+      LEGACY_PI_COLLECTOR_SOURCE_FILES,
+    );
+    writeLegacyPiInstallation(home, sourceRoot);
+    const paths = getPiSetupPaths(home);
+    const trackedPath = join(paths.supportDirectory, "src", "pi", "observer.ts");
+    const modifiedContent = "foreign replacement\n";
+    writeFileSync(trackedPath, modifiedContent);
+
+    assert.throws(
+      () => installPiCollector({ homeDir: home, sourceRoot: repositoryRoot }),
+      (error: unknown) => {
+        assert.ok(error instanceof PiSetupConflictError);
+        assert.match(error.message, /foreign file/i);
+        assert.deepEqual(error.paths, [trackedPath]);
+        return true;
+      },
+    );
+    assert.equal(readFileSync(trackedPath, "utf8"), modifiedContent);
+    assert.equal(
+      existsSync(join(paths.supportDirectory, "src", "runtime", "is-main-module.ts")),
+      false,
+    );
+  });
+
+  test("executes the installed ingest entrypoint with its copied support tree", () => {
+    const { home, sourceRoot } = fixture();
+    const stateDirectory = join(home, "state");
+    mkdirSync(stateDirectory, { recursive: true });
+    installPiCollector({ homeDir: home, sourceRoot });
+
+    const input = {
+      interactionId: "installed-ingest-1",
+      sessionId: "installed-session",
+      submittedPrompt: "installed prompt",
+      effectivePrompt: "installed effective prompt",
+      finalReport: "installed report",
+      status: "completed",
+      reason: null,
+      provenance: "pi-setup-test",
+    };
+    const installedIngest = join(
+      getPiSetupPaths(home).supportDirectory,
+      "src",
+      "bin",
+      "ingest-pi.ts",
+    );
+    const result = spawnSync(process.execPath, [installedIngest], {
+      cwd: repositoryRoot,
+      env: {
+        ...process.env,
+        HOME: join(home, "ignored-home-variable"),
+        HARVEST_PI_COLLECT: "1",
+        HARVEST_STATE_DIR: stateDirectory,
+      },
+      input: `${JSON.stringify(input)}\n`,
+      encoding: "utf8",
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), {
+      status: "inserted",
+      interactionId: input.interactionId,
+      sessionId: input.sessionId,
+    });
+
+    const db = openDatabase(join(stateDirectory, "harvest.db"));
+    try {
+      const store = new PiInteractionStore(db);
+      const stored = store.get(input.sessionId, input.interactionId);
+      assert.deepEqual(stored, {
+        ...input,
+        dedupKey: stored?.dedupKey,
+      });
+    } finally {
+      db.close();
     }
   });
 
@@ -193,6 +362,7 @@ describe("Pi collector setup", () => {
 function fixture(
   homeName = "home",
   sourceName = "source",
+  sourceFiles: readonly string[] = PI_COLLECTOR_SOURCE_FILES,
 ): {
   home: string;
   sourceRoot: string;
@@ -203,10 +373,43 @@ function fixture(
   const sourceRoot = join(base, sourceName);
   mkdirSync(home, { recursive: true });
   mkdirSync(sourceRoot, { recursive: true });
-  for (const relativePath of PI_COLLECTOR_SOURCE_FILES) {
+  for (const relativePath of sourceFiles) {
     const target = join(sourceRoot, relativePath);
     mkdirSync(dirname(target), { recursive: true });
     cpSync(join(repositoryRoot, relativePath), target);
   }
   return { home, sourceRoot };
+}
+
+function writeLegacyPiInstallation(home: string, sourceRoot: string): void {
+  const paths = getPiSetupPaths(home);
+  mkdirSync(paths.extensionsDirectory, { recursive: true });
+  writeFileSync(paths.discoveryPath, LEGACY_DISCOVERY_MODULE);
+
+  const files = [
+    {
+      path: HARVEST_PI_DISCOVERY_FILE_NAME,
+      sha256: sha256(LEGACY_DISCOVERY_MODULE),
+    },
+  ];
+  for (const relativePath of LEGACY_PI_COLLECTOR_SOURCE_FILES) {
+    const sourcePath = join(sourceRoot, relativePath);
+    const targetPath = join(paths.supportDirectory, relativePath);
+    mkdirSync(dirname(targetPath), { recursive: true });
+    cpSync(sourcePath, targetPath);
+    files.push({
+      path: `${HARVEST_PI_SUPPORT_DIRECTORY_NAME}/${relativePath}`,
+      sha256: sha256(readFileSync(sourcePath)),
+    });
+  }
+
+  const payload = JSON.stringify({ format: 1, files });
+  writeFileSync(
+    paths.manifestPath,
+    `${JSON.stringify({ format: 1, files, manifestSha256: sha256(payload) })}\n`,
+  );
+}
+
+function sha256(value: string | Buffer): string {
+  return createHash("sha256").update(value).digest("hex");
 }

@@ -52,20 +52,40 @@ the setup-owned discovery path is the one observer installation.
 
 ### 2. Export the opt-in and state directory in the launching shell
 
-In each shell, launcher, or pane environment that should collect, set:
+In each shell, launcher, or pane environment that should collect, enable the
+opt-in:
 
 ```bash
 export HARVEST_PI_COLLECT=1
-export HARVEST_STATE_DIR="$HOME/.local/state/herdr-harvest"
 ```
 
-Alternatively, a Herdr-managed process may provide
-`HERDR_PLUGIN_STATE_DIR`; Harvest uses that state directory when
-`HARVEST_STATE_DIR` is not set. There is no Herdr plugin API that propagates
-these variables into new Pi processes automatically, so this environment step
-must be arranged for each launching shell or pane. The observer itself is
-automatic after both setup steps: start a new Pi process normally, without a
-per-interaction capture command or a per-pane extension flag.
+Use the authoritative plugin state directory reported by the installed Herdr
+environment:
+
+```bash
+herdr plugin config-dir j1nn0.herdr-harvest
+```
+
+When the launcher provides `HERDR_PLUGIN_STATE_DIR`, use that value instead.
+The Harvest plugin, Pi observer, Codex hooks, and Inbox must all resolve to
+this same state directory. Do not globally export an unrelated
+`HARVEST_STATE_DIR`. Set `HARVEST_STATE_DIR` explicitly only in a launcher
+that does not provide `HERDR_PLUGIN_STATE_DIR`:
+
+```bash
+export HARVEST_STATE_DIR="$(herdr plugin config-dir j1nn0.herdr-harvest)"
+```
+
+`HARVEST_STATE_DIR` takes precedence when both variables are set. The
+environment still has to be present in the launcher that starts the process;
+Herdr does not guarantee that `HERDR_PLUGIN_STATE_DIR` is propagated into
+every pane. The observer itself is automatic after both setup steps: start a
+new Pi process normally, without a per-interaction capture command or a
+per-pane extension flag.
+
+If two state directories already contain databases, back up and reconcile the
+data before changing the path. Do not delete the old database; Harvest does
+not migrate or delete databases automatically.
 
 Changes to the environment or discovery files affect new Pi processes only.
 Restart an already-running Pi process after enabling, disabling, or changing

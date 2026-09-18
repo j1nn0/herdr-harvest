@@ -59,7 +59,7 @@
   entrypoint tests aligned.
 
 - Release → bump `version` in both `package.json` and `herdr-plugin.toml`; the two must not
-  drift. There is no CHANGELOG or release workflow yet.
+  drift. `CHANGELOG.md` exists, but there is still no release workflow beyond CI.
 - Commit messages follow Conventional Commits (`feat:`, `fix:`, `docs:`, `ci:`, `test:`,
   `chore:`; `feat!:` for breaking changes).
 

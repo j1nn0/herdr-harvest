@@ -20,6 +20,7 @@ export const PI_COLLECTOR_SOURCE_FILES = [
   "src/pi/ingest-writer.ts",
   "src/pi/ingest.ts",
   "src/bin/ingest-pi.ts",
+  "src/runtime/is-main-module.ts",
   "src/config/config.ts",
   "src/domain/pi-interaction.ts",
   "src/persistence/database.ts",
@@ -138,6 +139,15 @@ export function installPiCollector(options: PiSetupOptions): PiSetupInstallResul
       `Harvest Pi setup found a foreign file and is refusing to overwrite: ${targetConflicts.join(", ")}`,
       targetConflicts,
     );
+  }
+  if (manifest.kind === "valid") {
+    const manifestConflicts = manifestOwnershipConflicts(paths, manifest.manifest, plan);
+    if (manifestConflicts.length > 0) {
+      throw new PiSetupConflictError(
+        `Harvest Pi setup found modified files and is refusing to update them: ${manifestConflicts.join(", ")}`,
+        manifestConflicts,
+      );
+    }
   }
 
   ensureDirectoryPath(paths.extensionsDirectory);
@@ -396,24 +406,22 @@ function readManifest(paths: PiSetupPaths): ManifestRead {
   }
   const files = value.files;
   const manifestSha256 = value.manifestSha256;
-  if (
-    !Array.isArray(files) ||
-    typeof manifestSha256 !== "string" ||
-    files.length !== PI_COLLECTOR_SOURCE_FILES.length + 1
-  ) {
+  if (!Array.isArray(files) || typeof manifestSha256 !== "string" || files.length === 0) {
     return { kind: "invalid" };
   }
-  const expectedPaths = declaredRelativePaths();
   const entries: ManifestEntry[] = [];
-  for (const [index, entry] of files.entries()) {
+  const seenPaths = new Set<string>();
+  for (const entry of files) {
     if (
       !isRecord(entry) ||
       typeof entry.path !== "string" ||
-      entry.path !== expectedPaths[index] ||
-      !isSha256(entry.sha256)
+      !isManifestPath(paths, entry.path) ||
+      !isSha256(entry.sha256) ||
+      seenPaths.has(entry.path)
     ) {
       return { kind: "invalid" };
     }
+    seenPaths.add(entry.path);
     entries.push({ path: entry.path, sha256: entry.sha256 });
   }
   const expectedManifestHash = sha256(manifestPayload(entries));
@@ -436,20 +444,66 @@ function manifestPayload(files: ManifestEntry[]): string {
   return JSON.stringify({ format: MANIFEST_FORMAT, files });
 }
 
-function declaredRelativePaths(): string[] {
-  return [
-    HARVEST_PI_DISCOVERY_FILE_NAME,
-    ...PI_COLLECTOR_SOURCE_FILES.map(
-      (relativePath) => `${HARVEST_PI_SUPPORT_DIRECTORY_NAME}/${relativePath}`,
-    ),
-  ];
+function manifestMatchesPlan(manifest: Manifest, plan: PlannedFile[]): boolean {
+  return (
+    manifest.files.length === plan.length &&
+    manifest.files.every(
+      (entry, index) =>
+        entry.path === plan[index]?.relativePath && entry.sha256 === plan[index]?.hash,
+    )
+  );
 }
 
-function manifestMatchesPlan(manifest: Manifest, plan: PlannedFile[]): boolean {
-  return manifest.files.every(
-    (entry, index) =>
-      entry.path === plan[index]?.relativePath && entry.sha256 === plan[index]?.hash,
-  );
+function manifestOwnershipConflicts(
+  paths: PiSetupPaths,
+  manifest: Manifest,
+  plan: PlannedFile[],
+): string[] {
+  const currentPlanPaths = new Set(plan.map((file) => file.relativePath));
+  const conflicts: string[] = [];
+  for (const entry of manifest.files) {
+    if (currentPlanPaths.has(entry.path)) {
+      continue;
+    }
+    const targetPath = manifestTargetPath(paths, entry.path);
+    if (
+      targetPath !== undefined &&
+      pathKind(targetPath) !== "missing" &&
+      !isOwnedTarget(targetPath, entry.sha256)
+    ) {
+      conflicts.push(targetPath);
+    }
+  }
+  return conflicts;
+}
+
+function isManifestPath(paths: PiSetupPaths, relativePath: string): boolean {
+  return manifestTargetPath(paths, relativePath) !== undefined;
+}
+
+function manifestTargetPath(paths: PiSetupPaths, relativePath: string): string | undefined {
+  if (relativePath === HARVEST_PI_DISCOVERY_FILE_NAME) {
+    return paths.discoveryPath;
+  }
+  const supportPrefix = `${HARVEST_PI_SUPPORT_DIRECTORY_NAME}/`;
+  if (!relativePath.startsWith(supportPrefix)) {
+    return undefined;
+  }
+  const segments = relativePath.slice(supportPrefix.length).split("/");
+  if (
+    segments.length === 0 ||
+    segments.some(
+      (segment) =>
+        segment.length === 0 ||
+        segment === "." ||
+        segment === ".." ||
+        segment.includes("\\") ||
+        segment.includes("\0"),
+    )
+  ) {
+    return undefined;
+  }
+  return join(paths.supportDirectory, ...segments);
 }
 
 function manifestHash(manifest: Manifest, relativePath: string): string | undefined {
