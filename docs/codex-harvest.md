@@ -276,33 +276,45 @@ independently during the runs.
 
 ### Direct production runs (`LIVE_VERIFIED`)
 
-Three consecutive turns in one session through `codex exec` / `exec resume
---last` with the production adapters (`submit-hook.ts`, `stop-hook.ts`,
-`notify-commit.ts`) and `HARVEST_CODEX_COLLECT=1`:
+Two independent live series through `codex exec` / `exec resume --last` with
+the production adapters (`submit-hook.ts`, `stop-hook.ts`,
+`notify-commit.ts`) and `HARVEST_CODEX_COLLECT=1`, one before and one after
+the hardening fixes (atomic commit, shared entrypoint helper, shipped
+helper file). Each series ran three consecutive turns in one session:
 
 - All three submitted prompts matched byte-for-byte; all three final reports
-  matched byte-for-byte (`PROD1-OK`, `PROD2-OK`, `PROD3-OK`), including the
-  read-tool turn with no tool-output contamination.
-- One Codex session, three distinct turn identities, three `completed` rows,
-  no duplicates, `user_version` stayed `5`, no pending rows for these turns.
-- A fourth `pending` row held an internal memory-consolidation prompt
-  (`## Memory Writing Agent ...`, 52,406 bytes) with no provisional and no
-  commit: persistence failed closed as designed. The Inbox fix in this branch
-  keeps pending rows out of listing, open, copy, archive, and search.
+  matched byte-for-byte (`PROD1-OK`, `PROD2-OK`, `PROD3-OK`, then
+  `FINAL1-OK`, `FINAL2-OK`, `FINAL3-OK`), including each read-tool turn with
+  no tool-output contamination.
+- One Codex session per series, three distinct turn identities, three
+  `completed` rows, no duplicates, `user_version` stayed `5`.
+- The first series also captured a fourth `pending` row holding an internal
+  memory-consolidation prompt (`## Memory Writing Agent ...`, 52,406 bytes)
+  with no provisional and no commit: persistence failed closed as designed.
+  The Inbox fix in this branch keeps pending rows out of listing, open,
+  copy, archive, and search.
 - Production `harvest.db` and the production Inbox service were checked
   independently; prompt/report copy returned the exact stored bytes.
+- Between the series, a stale support tree missing the entrypoint helper
+  made hooks fail loudly (`UserPromptSubmit Failed`, zero rows); reinstalling
+  from the fixed tree restored capture. This confirmed hook failures are
+  loud, never silent loss.
 
 ### Herdr-mediated production runs (`LIVE_VERIFIED`)
 
-Two consecutive prompts in one Herdr-launched interactive Codex pane using
-the same production adapters, with no Harvest instructions to the working
-agent and no orchestrator forwarding:
+Two live series in Herdr-launched interactive Codex panes using the same
+production adapters, with no Harvest instructions to the working agent and
+no orchestrator forwarding. The first series ran two consecutive prompts in
+one pane (`HPROD1-OK`, `HPROD2-OK`); the final series ran pane A with two
+prompts (`HFINAL1-OK`, `HFINAL2-OK`) and pane B with one prompt
+(`HFINALB1-OK`):
 
-- Both submitted prompts matched byte-for-byte; both final reports matched
-  byte-for-byte (`HPROD1-OK`, `HPROD2-OK`).
-- Same session, two distinct turn identities, two `completed` rows, no
-  duplicates, no cross-pane association. The Inbox listed five completed
-  Codex rows across the two live sessions.
+- Every submitted prompt matched byte-for-byte; every final report matched
+  byte-for-byte.
+- Same session per pane, distinct turn identities per turn, separate sessions
+  per pane, `completed` rows only, no duplicates, no cross-pane association.
+  The final Inbox check listed six completed Codex rows across three live
+  sessions, and all six opened and copied exactly.
 
 ### Not live-verified (`UNVERIFIED`)
 
