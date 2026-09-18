@@ -316,10 +316,33 @@ prompts (`HFINAL1-OK`, `HFINAL2-OK`) and pane B with one prompt
   The final Inbox check listed six completed Codex rows across three live
   sessions, and all six opened and copied exactly.
 
-### Not live-verified (`UNVERIFIED`)
+### Real-TTY Inbox verification (`LIVE_VERIFIED` with an isolated clipboard)
 
-- Real-TTY interactive Inbox driving and system-clipboard delivery (service
-  level is `AUTOMATED_TEST_ONLY` via a fake clipboard provider).
+On 2026-09-18 the orchestrator drove the real production Inbox
+(`node src/bin/inbox.ts`) under a local PTY against an isolated database
+holding two completed Codex rows (one 3KB long), one Pi row, one Legacy row,
+and one pending Codex row, with a fake `pbcopy` earlier on `PATH` so the real
+system-first clipboard chain ran without touching the user clipboard:
+
+- Launch, list badges (`Codex · Completed`, `Pi · Completed`, legacy), and
+  the pending row's absence; `j`/Enter opens the correct Codex detail with
+  exact multiline/Unicode/whitespace `PROMPT` and `FINAL REPORT` sections.
+- Long content pages from head (`line 1-5 of 10`) to tail (`end marker B`)
+  and back; search `beta` filters to the single matching Codex row;
+  `a` on a Codex row refuses archiving; Tab reaches the empty archived
+  collection; 40x10 narrow rendering stays intact; `q` exits 0.
+- `p`, `f`, and `y` through the real TUI wrote byte-exact prompt (55 bytes)
+  and final-report (56 bytes) payloads through the real clipboard chain.
+
+### Still not live-verified (`UNVERIFIED`)
+
+- Real system-clipboard delivery (deliberately untouched; only the provider
+  chain up to the system command boundary was exercised).
+- Live Stop-continuation ordering (`STOP_CONTINUATION: SOURCE_VERIFIED +
+  AUTOMATED_TEST_ONLY`): the upstream mechanism and the synthetic A1 to A2
+  regression support the notify-only commit rule, but no real model turn was
+  forced to continue mid-turn, as that requires model quota.
+- Real `/hooks` trust-approval UX on a user-global configuration.
 - Linux/Windows live hook behavior; other Codex versions.
 - A procedure alone is not live E2E success; record future runs in these
   same categories.
