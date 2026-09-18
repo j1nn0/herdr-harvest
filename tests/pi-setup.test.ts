@@ -15,6 +15,8 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { openDatabase } from "../src/persistence/database.ts";
+import { PiInteractionStore } from "../src/persistence/pi-interaction-store.ts";
 import {
   getPiSetupPaths,
   installPiCollector,
@@ -47,6 +49,60 @@ describe("Pi collector setup", () => {
     assert.match(readFileSync(paths.discoveryPath, "utf8"), /herdr-harvest\/src\/pi\/observer\.ts/);
     for (const relativePath of PI_COLLECTOR_SOURCE_FILES) {
       assert.equal(existsSync(join(paths.supportDirectory, relativePath)), true);
+    }
+  });
+
+  test("executes the installed ingest entrypoint with its copied support tree", () => {
+    const { home, sourceRoot } = fixture();
+    const stateDirectory = join(home, "state");
+    mkdirSync(stateDirectory, { recursive: true });
+    installPiCollector({ homeDir: home, sourceRoot });
+
+    const input = {
+      interactionId: "installed-ingest-1",
+      sessionId: "installed-session",
+      submittedPrompt: "installed prompt",
+      effectivePrompt: "installed effective prompt",
+      finalReport: "installed report",
+      status: "completed",
+      reason: null,
+      provenance: "pi-setup-test",
+    };
+    const installedIngest = join(
+      getPiSetupPaths(home).supportDirectory,
+      "src",
+      "bin",
+      "ingest-pi.ts",
+    );
+    const result = spawnSync(process.execPath, [installedIngest], {
+      cwd: repositoryRoot,
+      env: {
+        ...process.env,
+        HOME: join(home, "ignored-home-variable"),
+        HARVEST_PI_COLLECT: "1",
+        HARVEST_STATE_DIR: stateDirectory,
+      },
+      input: `${JSON.stringify(input)}\n`,
+      encoding: "utf8",
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), {
+      status: "inserted",
+      interactionId: input.interactionId,
+      sessionId: input.sessionId,
+    });
+
+    const db = openDatabase(join(stateDirectory, "harvest.db"));
+    try {
+      const store = new PiInteractionStore(db);
+      const stored = store.get(input.sessionId, input.interactionId);
+      assert.deepEqual(stored, {
+        ...input,
+        dedupKey: stored?.dedupKey,
+      });
+    } finally {
+      db.close();
     }
   });
 

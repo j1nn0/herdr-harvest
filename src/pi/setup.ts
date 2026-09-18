@@ -20,6 +20,7 @@ export const PI_COLLECTOR_SOURCE_FILES = [
   "src/pi/ingest-writer.ts",
   "src/pi/ingest.ts",
   "src/bin/ingest-pi.ts",
+  "src/runtime/is-main-module.ts",
   "src/config/config.ts",
   "src/domain/pi-interaction.ts",
   "src/persistence/database.ts",
