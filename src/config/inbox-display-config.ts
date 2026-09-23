@@ -31,8 +31,8 @@ export interface InboxDisplayConfig {
 export const DEFAULT_INBOX_DISPLAY_CONFIG: InboxDisplayConfig = {
   orchestrationHeaderFields: ["label"],
   sessionHeaderFields: ["role", "agent", "session"],
-  standaloneFields: ["unread", "agent", "session", "context", "age"],
-  groupedFields: ["unread", "context", "age"],
+  standaloneFields: ["unread", "agent", "session", "context", "preview", "age"],
+  groupedFields: ["unread", "context", "preview", "age"],
   metadataFields: [],
 };
 

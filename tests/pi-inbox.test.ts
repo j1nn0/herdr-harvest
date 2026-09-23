@@ -9,7 +9,7 @@ import type { CaptureInput } from "../src/domain/result.ts";
 import { openDatabase } from "../src/persistence/database.ts";
 import { SqliteResultStore } from "../src/persistence/result-store.ts";
 import { createApp } from "../src/tui/app.ts";
-import { formatInboxRow, inboxItemBadge } from "../src/tui/inbox-view.ts";
+import { displayWidth, formatInboxRow, inboxItemBadge } from "../src/tui/inbox-view.ts";
 import { detailContentLines } from "../src/tui/result-view.ts";
 
 const h = React.createElement;
@@ -135,6 +135,58 @@ describe("Pi Inbox integration", () => {
       assert.match(formatInboxRow(failedItem, 120, 9_000), /Pi · Failed-incomplete/);
       assert.equal(inboxItemBadge(legacy), "Legacy");
       assert.match(formatInboxRow(legacy, 120, 9_000), /Legacy/);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("shows isolated completed, failed, and empty Pi previews safely", () => {
+    const completed = makePi({
+      interactionId: "pi-preview-completed",
+      finalReport: "\u001b[32m PI report 日本語 e\u0301 \u001b[0m\nsecond",
+    });
+    const failed = makePi({
+      interactionId: "pi-preview-failed",
+      submittedPrompt: "  PI failed prompt\nsecond",
+      finalReport: null,
+      status: "failed",
+      reason: "synthetic-failure",
+    });
+    const empty = makePi({
+      interactionId: "pi-preview-empty",
+      submittedPrompt: "prompt must not replace an empty report",
+      finalReport: "\u001b[31m \u001b[0m\n\t",
+    });
+    const { port, store } = makeService([completed, failed, empty]);
+    try {
+      const items = port.list();
+      const itemFor = (id: string) => {
+        const item = items.find((candidate) => candidate.id === id);
+        assert.ok(item);
+        return item;
+      };
+      const completedItem = itemFor(completed.interactionId);
+      const failedItem = itemFor(failed.interactionId);
+      const emptyItem = itemFor(empty.interactionId);
+
+      assert.equal(completedItem.preview, "PI report 日本語 e\u0301 second");
+      assert.equal(failedItem.preview, "PI failed prompt second");
+      assert.equal(emptyItem.preview, "");
+
+      const completedRow = formatInboxRow(completedItem, 200, 9_000);
+      const failedRow = formatInboxRow(failedItem, 200, 9_000);
+      const emptyRow = formatInboxRow(emptyItem, 200, 9_000);
+      assert.match(completedRow, /PI report 日本語 e\u0301 second/);
+      assert.match(failedRow, /PI failed prompt second/);
+      assert.match(emptyRow, /\(empty\)/);
+      assert.doesNotMatch(completedRow, /PI failed|prompt must not/);
+      assert.doesNotMatch(failedRow, /PI report|prompt must not/);
+      assert.doesNotMatch(emptyRow, /prompt must not/);
+      assert.equal(completedRow.includes("\u001b"), false);
+
+      const narrowRow = formatInboxRow(completedItem, 32, 9_000);
+      assert.equal(narrowRow.split(/\r\n?|\n/).length, 1);
+      assert.ok(displayWidth(narrowRow) <= 32);
     } finally {
       store.close();
     }

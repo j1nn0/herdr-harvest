@@ -46,7 +46,7 @@ export function preview(rawText: string, maxChars = 120): string {
     return "";
   }
 
-  const lines = rawText
+  const lines = stripTerminalSequences(rawText)
     .split(/\r\n?|\n/)
     .map((line) => line.replace(/\s+/g, " ").trim())
     .filter((line) => line.length > 0);
@@ -63,7 +63,8 @@ export function preview(rawText: string, maxChars = 120): string {
       continue;
     }
 
-    const lengthWithSeparator = tail.length === 0 ? line.length : line.length + 1;
+    const lengthWithSeparator =
+      tail.length === 0 ? codePointLength(line) : codePointLength(line) + 1;
     if (tailLength + lengthWithSeparator > limit) {
       break;
     }
@@ -73,16 +74,49 @@ export function preview(rawText: string, maxChars = 120): string {
   }
 
   const ellipsis = "…";
-  const bodyLength = Math.max(0, limit - ellipsis.length);
+  const bodyLength = Math.max(0, limit - codePointLength(ellipsis));
   if (tail.length === 0) {
     const lastLine = lines[lines.length - 1] ?? "";
-    return `${lastLine.slice(0, bodyLength)}${ellipsis}`;
+    return `${sliceCodePoints(lastLine, bodyLength)}${ellipsis}`;
   }
 
   const text = tail.join(" ");
-  if (tail.length === lines.length && text.length <= limit) {
+  if (tail.length === lines.length && codePointLength(text) <= limit) {
     return text;
   }
 
-  return `${text.slice(0, bodyLength)}${ellipsis}`;
+  return `${sliceCodePoints(text, bodyLength)}${ellipsis}`;
+}
+
+// biome-ignore lint/complexity/useRegexLiterals: escaped ANSI patterns stay readable as strings.
+const ANSI_OSC_SEQUENCE = new RegExp(
+  String.raw`(?:\u001B\][\s\S]*?(?:\u0007|\u001B\\|\u009C|$)|\u009D[\s\S]*?(?:\u0007|\u001B\\|\u009C|$))`,
+  "g",
+);
+// biome-ignore lint/complexity/useRegexLiterals: escaped ANSI patterns stay readable as strings.
+const ANSI_CSI_SEQUENCE = new RegExp(String.raw`(?:\u001B\[|\u009B)[0-?]*[ -/]*[@-~]`, "g");
+
+function stripTerminalSequences(rawText: string): string {
+  const withoutAnsi = rawText.replace(ANSI_OSC_SEQUENCE, "").replace(ANSI_CSI_SEQUENCE, "");
+  return Array.from(withoutAnsi)
+    .filter((character) => !isTerminalControlCharacter(character.codePointAt(0) ?? 0))
+    .join("");
+}
+
+function isTerminalControlCharacter(codePoint: number): boolean {
+  return (
+    codePoint <= 0x08 ||
+    codePoint === 0x0b ||
+    codePoint === 0x0c ||
+    (codePoint >= 0x0e && codePoint <= 0x1f) ||
+    (codePoint >= 0x7f && codePoint <= 0x9f)
+  );
+}
+
+function codePointLength(value: string): number {
+  return Array.from(value).length;
+}
+
+function sliceCodePoints(value: string, end: number): string {
+  return Array.from(value).slice(0, end).join("");
 }

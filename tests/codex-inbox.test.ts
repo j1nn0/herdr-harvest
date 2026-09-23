@@ -123,6 +123,54 @@ describe("Codex Inbox integration", () => {
     }
   });
 
+  test("shows isolated completed, failed, and empty Codex previews safely", () => {
+    const completed = makeInteraction({
+      interactionId: "codex-preview-completed",
+      finalReport: "\u001b[36m completed 日本語 \u001b[0m\nsecond",
+    });
+    const failed = makeInteraction({
+      interactionId: "codex-preview-failed",
+      submittedPrompt: "  Codex failed prompt\nsecond",
+      finalReport: null,
+      status: "failed",
+      reason: "synthetic-failure",
+    });
+    const empty = makeInteraction({
+      interactionId: "codex-preview-empty",
+      submittedPrompt: "prompt must not replace an empty report",
+      finalReport: "\u001b]8;;https://example.test\u0007\u001b]8;;\u0007\n\t",
+    });
+    const { port, store } = makeService([completed, failed, empty]);
+    try {
+      const items = port.list();
+      const itemFor = (id: string) => {
+        const item = items.find((candidate) => candidate.id === id);
+        assert.ok(item);
+        return item;
+      };
+      const completedItem = itemFor(completed.interactionId);
+      const failedItem = itemFor(failed.interactionId);
+      const emptyItem = itemFor(empty.interactionId);
+
+      assert.equal(completedItem.preview, "completed 日本語 second");
+      assert.equal(failedItem.preview, "Codex failed prompt second");
+      assert.equal(emptyItem.preview, "");
+
+      const completedRow = formatInboxRow(completedItem, 200, 9_000);
+      const failedRow = formatInboxRow(failedItem, 200, 9_000);
+      const emptyRow = formatInboxRow(emptyItem, 200, 9_000);
+      assert.match(completedRow, /completed 日本語 second/);
+      assert.match(failedRow, /Codex failed prompt second/);
+      assert.match(emptyRow, /\(empty\)/);
+      assert.doesNotMatch(completedRow, /Codex failed|prompt must not/);
+      assert.doesNotMatch(failedRow, /completed 日本語|prompt must not/);
+      assert.doesNotMatch(emptyRow, /prompt must not/);
+      assert.equal(completedRow.includes("\u001b"), false);
+    } finally {
+      store.close();
+    }
+  });
+
   test("opens exact prompt/report, copies each field independently, and cannot archive", async () => {
     const interaction = makeInteraction();
     const finalReport = interaction.finalReport;

@@ -20,6 +20,23 @@ function withConfigDirectory<T>(callback: (directory: string) => T): T {
 }
 
 describe("inbox display config", () => {
+  test("includes previews in the default standalone and grouped fields", () => {
+    assert.deepEqual(DEFAULT_INBOX_DISPLAY_CONFIG.standaloneFields, [
+      "unread",
+      "agent",
+      "session",
+      "context",
+      "preview",
+      "age",
+    ]);
+    assert.deepEqual(DEFAULT_INBOX_DISPLAY_CONFIG.groupedFields, [
+      "unread",
+      "context",
+      "preview",
+      "age",
+    ]);
+  });
+
   test("uses defaults silently when the default file is missing", () => {
     withConfigDirectory((directory) => {
       const loaded = loadInboxDisplayConfig({ HERDR_PLUGIN_CONFIG_DIR: directory });
