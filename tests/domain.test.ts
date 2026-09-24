@@ -23,6 +23,38 @@ describe("preview", () => {
   test("returns an empty string for blank input", () => {
     assert.equal(preview(" \n\t\r\n  "), "");
   });
+
+  test("keeps clean multiline Unicode output deterministic", () => {
+    const rawText = " leading\tline\n\n日本語 世界 e\u0301 🚀 ";
+    const expected = "leading line 日本語 世界 e\u0301 🚀";
+
+    assert.equal(preview(rawText), expected);
+    assert.equal(preview(rawText), expected);
+  });
+
+  test("removes ANSI sequences and terminal control characters", () => {
+    const rawText =
+      "\u001b[31m leading \u001b[0m\n\u001b]8;;https://example.test\u0007linked\u001b]8;;\u0007\nsecond\u0000\u0007\u000b\u001f";
+    const sanitized = preview(rawText);
+
+    assert.equal(sanitized, "leading linked second");
+    assert.equal(
+      Array.from(sanitized).some((character) => {
+        const codePoint = character.codePointAt(0) ?? 0;
+        return codePoint < 0x20 || (codePoint >= 0x7f && codePoint <= 0x9f);
+      }),
+      false,
+    );
+  });
+
+  test("truncates long Unicode text by code point", () => {
+    const rawText = "日本語😀".repeat(40);
+    const result = preview(rawText, 12);
+
+    assert.equal(result, "日本語😀日本語😀日本語…");
+    assert.equal(Array.from(result).length, 12);
+    assert.equal(result, preview(rawText, 12));
+  });
 });
 
 const sessionIdentity: Pick<

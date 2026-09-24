@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-24
+
+### Added
+
+- Added meaningful content previews for native Pi and Codex interactions by default.
+
+### Improved
+
+- Sanitized terminal control sequences in preview presentation.
+- Improved preview rendering in narrow panes.
+
+### Compatibility
+
+- No database migration is required; the schema remains at v6.
+- Collectors do not need to be reinstalled for this UI change.
+- Stored prompt and report bytes and copy behavior remain unchanged.
+
 ## [0.9.2] - 2026-09-18
 
 ### Fixed
@@ -183,7 +200,8 @@ First public release.
 - A completion inferred only from `blocked → idle` is not captured, because that transition can equally mean an approval prompt was cancelled.
 - Archived results stay in the database but cannot yet be browsed or restored from the inbox.
 
-[Unreleased]: https://github.com/j1nn0/herdr-harvest/compare/v0.9.2...HEAD
+[Unreleased]: https://github.com/j1nn0/herdr-harvest/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/j1nn0/herdr-harvest/compare/v0.9.2...v0.10.0
 [0.9.2]: https://github.com/j1nn0/herdr-harvest/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/j1nn0/herdr-harvest/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/j1nn0/herdr-harvest/compare/v0.8.0...v0.9.0

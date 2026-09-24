@@ -224,8 +224,9 @@ describe("Codex production TUI", () => {
       const frame = instance.lastFrame() ?? "";
       assert.equal(
         frame.split("\n").filter((line) => line.includes("Codex · Completed")).length,
-        2,
+        1,
       );
+      assert.match(frame, /codex-tail-47/);
       assert.equal(frame.split("\n").filter((line) => line.includes("Pi · Completed")).length, 1);
       assert.equal(frame.split("\n").filter((line) => line.includes(" · Legacy")).length, 1);
       assert.equal(frame.includes(fixture.texts.pendingPrompt), false);

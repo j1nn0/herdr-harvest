@@ -295,7 +295,8 @@ describe("inbox TUI", () => {
     assert.match(row, /409d97/);
     assert.match(row, /ago 1m/);
     assert.match(row, /Claude parser task/);
-    assert.doesNotMatch(row, /herdr-plugin-sdk|completed output preview/);
+    assert.match(row, /completed output preview/);
+    assert.doesNotMatch(row, /herdr-plugin-sdk/);
     assert.ok(displayWidth(row) <= 120);
   });
 
@@ -538,7 +539,8 @@ describe("inbox TUI", () => {
     assert.doesNotMatch(sessionHeader, /1 result/);
     assert.match(resultRow, /^ {4}● /);
     assert.match(resultRow, /日本語の長い orchestration label/);
-    assert.doesNotMatch(resultRow, /workspace|preview text/);
+    assert.match(resultRow, /preview text/);
+    assert.doesNotMatch(resultRow, /workspace/);
     assert.ok(displayWidth(formatOrchestrationHeader(orchestration, 12)) <= 12);
     assert.ok(displayWidth(formatOrchestrationHeader(orchestration, 12, undefined, true)) <= 12);
     assert.ok(
