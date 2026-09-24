@@ -27,9 +27,9 @@ Harvest turns "go back and find it" into "open the inbox".
 
 ## Completion snapshot, not a final answer
 
-This is the most important thing to understand about Harvest v0.1.
+This is the most important thing to understand about Harvest.
 
-What Harvest stores is a **completion snapshot**: the trailing rendered rows available at the moment the agent finished, requested up to `HARVEST_CAPTURE_LINES` rows. It is *not* a parsed final assistant message.
+What Harvest stores is a **completion snapshot**: available trailing terminal-history rows at the moment the agent finished, with a request for up to `HARVEST_CAPTURE_LINES` unwrapped logical lines by default. It is *not* a parsed final assistant message.
 
 That means a snapshot typically contains the agent's closing output *plus* whatever else was on screen — the agent's own UI chrome, status bars, banners, and part of the preceding conversation. Harvest deliberately does not try to guess where the assistant's final message begins and ends.
 
@@ -234,7 +234,7 @@ Nothing is written to the plugin checkout, and nothing leaves your machine. The 
 
 An invalid value falls back to the default *and* reports a warning on stderr rather than being silently ignored.
 
-`HARVEST_CAPTURE_LINES` is a requested row limit, not a guarantee of rows returned. Verified Herdr releases currently clamp read requests above 1000 logical rows server-side; this is an observed upstream implementation constraint, not a documented Herdr protocol limit, so Harvest passes requests through without normalizing them to 1000.
+`HARVEST_CAPTURE_LINES` is a requested row limit, not a guarantee of rows returned; Herdr may return fewer when available terminal history is shorter than requested. Verified Herdr releases currently clamp read requests above 1000 logical rows server-side; this is an observed upstream implementation constraint, not a documented Herdr protocol limit, so Harvest passes requests through without normalizing them to 1000.
 
 #### Inbox display configuration
 
