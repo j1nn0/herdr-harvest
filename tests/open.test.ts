@@ -69,6 +69,7 @@ describe("open entrypoint", () => {
         HERDR_BIN_PATH: command.path,
         ARGS_FILE: argsPath,
         HERDR_STUB_SUCCESS_OUTPUT: PANE_OPEN_SUCCESS_OUTPUT,
+        HARVEST_STUB_RUN_BODY: "1",
       });
 
       assert.equal(result.exitCode, 0);
