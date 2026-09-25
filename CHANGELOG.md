@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Upgraded `@j1nn0/herdr-plugin-sdk` to `^0.3.0` and migrated the inbox pane-open command to the typed `client.plugin.pane.open()` API.
+
 ## [0.10.0] - 2026-09-24
 
 ### Added

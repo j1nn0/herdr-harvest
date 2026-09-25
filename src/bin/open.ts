@@ -7,18 +7,13 @@ const ENTRYPOINT = "inbox";
 export async function runOpen(env: NodeJS.ProcessEnv = process.env): Promise<number> {
   try {
     const client = createHerdrClient({ env });
-    await client.run([
-      "plugin",
-      "pane",
-      "open",
-      "--plugin",
-      PLUGIN_ID,
-      "--entrypoint",
-      ENTRYPOINT,
-      "--placement",
-      "overlay",
-      "--focus",
-    ]);
+    // Use the SDK's default 10-second timeout for this short-lived pane-open call.
+    await client.plugin.pane.open({
+      pluginId: PLUGIN_ID,
+      entrypoint: ENTRYPOINT,
+      placement: "overlay",
+      focus: true,
+    });
     return 0;
   } catch (error) {
     process.stderr.write(`${errorDiagnostic(error)}\n`);
